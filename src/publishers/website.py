@@ -53,4 +53,4 @@ class WebsitePublisher(BasePublisher):
         slug = data.get("slug", payload["slug"])
         url = f"{settings.website_api_url}/blog/{slug}"
         log.info("Published to website: {}", url)
-        return PublishResult(self.platform, url, True)
+        return PublishResult(self.platform, url, True, post_body=html)

@@ -42,4 +42,4 @@ class MediumPublisher(BasePublisher):
 
         post_url = data.get("data", {}).get("url", "")
         log.info("Published to Medium: {}", post_url)
-        return PublishResult(self.platform, post_url, True)
+        return PublishResult(self.platform, post_url, True, post_body=body)

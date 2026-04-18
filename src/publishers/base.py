@@ -13,6 +13,7 @@ class PublishResult:
     url: str
     success: bool
     error: str = ""
+    post_body: str = ""
 
 
 class BasePublisher(abc.ABC):

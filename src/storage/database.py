@@ -49,6 +49,61 @@ async def fetchval(query: str, *args: Any) -> Any:
     return await pool.fetchval(query, *args)
 
 
+# ── Signals / Topics ──────────────────────────────────────────
+
+async def insert_signals(signals: list[dict], batch_id: str) -> int:
+    """Bulk-insert raw/scored signals into the topics table. Returns count inserted."""
+    pool = await get_pool()
+    rows = [
+        (
+            s.get("source", "unknown"),
+            s.get("title", ""),
+            s.get("url", ""),
+            int(s.get("engagement", 0)),
+            float(s.get("viral_score", 0)),
+            s.get("subreddit", None),
+            batch_id,
+        )
+        for s in signals
+    ]
+    await pool.executemany(
+        """
+        INSERT INTO topics (source, title, url, engagement, viral_score, subreddit, batch_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+async def update_topic_scores(scored_topics: list, batch_id: str) -> int:
+    """Update topics with AI scores, decisions, and clusters after scoring."""
+    pool = await get_pool()
+    count = 0
+    for t in scored_topics:
+        title = t.title if hasattr(t, "title") else t.get("title", "")
+        await pool.execute(
+            """
+            UPDATE topics
+            SET ai_score = $1, final_score = $2, decision = $3,
+                cluster = $4, suggested_angle = $5, priority = $6,
+                score_adjustment = $7, scored_at = NOW()
+            WHERE batch_id = $8::uuid AND LOWER(title) = LOWER($9)
+            """,
+            float(t.original_score if hasattr(t, "original_score") else 0),
+            float(t.score if hasattr(t, "score") else 0),
+            t.decision if hasattr(t, "decision") else "IGNORE",
+            t.cluster if hasattr(t, "cluster") else "other",
+            t.suggested_angle if hasattr(t, "suggested_angle") else "",
+            t.priority.value if hasattr(t, "priority") and hasattr(t.priority, "value") else "medium",
+            int(t.score_adjustment if hasattr(t, "score_adjustment") else 0),
+            batch_id,
+            title,
+        )
+        count += 1
+    return count
+
+
 # ── Content CRUD ─────────────────────────────────────────────
 
 async def insert_draft(
@@ -61,24 +116,29 @@ async def insert_draft(
     seo_keywords: list[str],
     meta_description: str,
     social_posts: dict,
+    social_posts_variant_b: dict,
     cta_a: str,
     cta_b: str,
     outline: list[str],
     suggested_angle: str,
     priority: str,
+    image_url: str = "",
 ) -> None:
     await execute(
         """
         INSERT INTO content
             (content_id, title, cluster, score, article_html, medium_article,
-             seo_keywords, meta_description, social_posts,
-             cta_variant_a, cta_variant_b, outline, suggested_angle, priority, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'draft')
+             seo_keywords, meta_description, social_posts, social_posts_variant_b,
+             cta_variant_a, cta_variant_b, outline, suggested_angle, priority,
+             image_url, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft')
         ON CONFLICT (content_id) DO NOTHING
         """,
         content_id, title, cluster, score, article_html, medium_article,
         json.dumps(seo_keywords), meta_description, json.dumps(social_posts),
+        json.dumps(social_posts_variant_b),
         cta_a, cta_b, json.dumps(outline), suggested_angle, priority,
+        image_url,
     )
 
 
@@ -92,13 +152,14 @@ async def update_content_status(content_id: str, status: str) -> None:
 
 async def insert_publish_log(
     content_id: str, platform: str, url: str, cta_variant: str,
+    post_body: str = "",
 ) -> None:
     await execute(
         """
-        INSERT INTO publish_logs (content_id, platform, published_url, cta_variant)
-        VALUES ($1, $2, $3, $4)
+        INSERT INTO publish_logs (content_id, platform, published_url, cta_variant, post_body)
+        VALUES ($1, $2, $3, $4, $5)
         """,
-        content_id, platform, url, cta_variant,
+        content_id, platform, url, cta_variant, post_body,
     )
 
 

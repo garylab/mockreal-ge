@@ -18,6 +18,8 @@ CONTENT_SYSTEM = (
     "- Use analogies from everyday life (cooking, sports, dating) to explain concepts.\n\n"
     f"BANNED PHRASES (never use these): {_BANNED_LIST}\n\n"
     "STRUCTURE RULES:\n"
+    "- Do NOT include <h1> or the article title in article_html — the website renders it separately.\n"
+    "- article_html must start directly with content (a hook paragraph or the first <h2>).\n"
     "- No more than 3 paragraphs per H2 section.\n"
     "- Do NOT start every section with a question.\n"
     "- Vary section openings: anecdote, statistic, bold claim, scenario, quote.\n"
@@ -34,10 +36,10 @@ CONTENT_SYSTEM = (
     "{\n"
     '  "article_title": "human-sounding blog title, 6-12 words, no AI patterns",\n'
     '  "outline": ["H2 section 1","..."],\n'
-    '  "article_html": "HTML article 800-1200 words",\n'
+    '  "article_html": "HTML article 800-1200 words. Start with the first <h2>, do NOT include <h1> or the title — the title is rendered separately by the website.",\n'
     '  "social_posts": {"twitter":"280 chars","linkedin":"200-300 words","facebook":"100-200 words"},\n'
     '  "social_posts_variant_b": {"twitter":"alt","linkedin":"alt","facebook":"alt"},\n'
-    '  "medium_article": "markdown 1000-1500 words",\n'
+    '  "medium_article": "markdown 1000-1500 words. Do NOT include a # title heading — Medium adds it automatically.",\n'
     '  "seo_keywords": ["kw1","kw2"],\n'
     '  "meta_description": "155 chars max",\n'
     '  "cta_variant_a": "emotional pain-driven CTA",\n'

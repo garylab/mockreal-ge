@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
 
 from src.approval.telegram_bot import send_for_approval
 from src.config import settings
@@ -57,6 +58,11 @@ async def main_pipeline() -> None:
         log.info("[3/8] Scoring virality...")
         scored_signals = viral_score(signals)
 
+        # Persist raw signals to DB
+        batch_id = str(uuid.uuid4())
+        saved = await db.insert_signals(scored_signals, batch_id)
+        log.info("Saved {} signals to DB (batch={})", saved, batch_id[:8])
+
         # 4. Signal fusion (GPT-4o)
         log.info("[4/8] Fusing signals into hybrid topics...")
         fused_topics = await fuse(scored_signals)
@@ -82,6 +88,15 @@ async def main_pipeline() -> None:
                     "avg_conversion": float(f.get("avg_conversion", 0)),
                 }
         scored_topics = adjust(scored_topics, cluster_perf)
+
+        # Persist fused+scored topics to DB
+        fused_saved = await db.insert_signals(
+            [{"source": "fused", "title": t.title, "engagement": 0,
+              "viral_score": t.viral_score} for t in scored_topics],
+            batch_id,
+        )
+        updated = await db.update_topic_scores(scored_topics, batch_id)
+        log.info("Saved {} fused topics, updated {} scores", fused_saved, updated)
 
         # 7. Filter, deduplicate against DB, apply blacklist
         log.info("[7/8] Filtering...")
@@ -109,11 +124,13 @@ async def main_pipeline() -> None:
                     seo_keywords=pkg.seo_keywords,
                     meta_description=pkg.meta_description,
                     social_posts=pkg.social_posts,
+                    social_posts_variant_b=pkg.social_posts_variant_b,
                     cta_a=pkg.cta_variant_a,
                     cta_b=pkg.cta_variant_b,
                     outline=pkg.outline,
                     suggested_angle=topic.suggested_angle,
                     priority=topic.priority.value,
+                    image_url=pkg.featured_image_url,
                 )
 
                 if settings.auto_approve:
@@ -155,6 +172,13 @@ async def publish_approved(content_id: str) -> None:
         except json.JSONDecodeError:
             social = {}
 
+    social_b = row.get("social_posts_variant_b", "{}")
+    if isinstance(social_b, str):
+        try:
+            social_b = json.loads(social_b)
+        except json.JSONDecodeError:
+            social_b = {}
+
     keywords = row.get("seo_keywords", "[]")
     if isinstance(keywords, str):
         try:
@@ -168,11 +192,12 @@ async def publish_approved(content_id: str) -> None:
         article_html=row.get("article_html", ""),
         medium_article=row.get("medium_article", ""),
         social_posts=social if isinstance(social, dict) else {},
+        social_posts_variant_b=social_b if isinstance(social_b, dict) else {},
         seo_keywords=keywords if isinstance(keywords, list) else [],
         meta_description=row.get("meta_description", ""),
         cta_variant_a=row.get("cta_variant_a", ""),
         cta_variant_b=row.get("cta_variant_b", ""),
-        featured_image_url=row.get("featured_image_url", ""),
+        featured_image_url=row.get("image_url", ""),
     )
 
     cta_variant = await get_preferred_variant()
@@ -189,7 +214,9 @@ async def publish_approved(content_id: str) -> None:
             log.error("Publish error: {}", r)
             continue
         if r.success:
-            await db.insert_publish_log(content_id, r.platform, r.url, cta_variant)
+            await db.insert_publish_log(
+                content_id, r.platform, r.url, cta_variant, r.post_body,
+            )
             published += 1
         else:
             log.warning("Publish failed on {}: {}", r.platform, r.error)

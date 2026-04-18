@@ -50,4 +50,4 @@ class LinkedInPublisher(BasePublisher):
 
         post_id = data.get("id", "")
         log.info("Published to LinkedIn: {}", post_id)
-        return PublishResult(self.platform, post_id, True)
+        return PublishResult(self.platform, post_id, True, post_body=text)
