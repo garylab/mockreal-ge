@@ -21,6 +21,8 @@ dependencies = [
     "seaborn>=0.13.2",
     "matplotlib>=3.10.8",
     "pandas>=3.0.2",
+    "pgvector>=0.4.2",
+    "numpy>=2.4.4",
 ]
 
 [dependency-groups]

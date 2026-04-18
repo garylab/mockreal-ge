@@ -4,11 +4,17 @@ import json
 from typing import Any
 
 import asyncpg
+from pgvector.asyncpg import register_vector
 
 from src.config import settings
 
 
 _pool: asyncpg.Pool | None = None
+
+
+async def _init_connection(conn: asyncpg.Connection) -> None:
+    """Register pgvector type on each new connection."""
+    await register_vector(conn)
 
 
 async def get_pool() -> asyncpg.Pool:
@@ -18,6 +24,7 @@ async def get_pool() -> asyncpg.Pool:
             dsn=settings.dsn,
             min_size=2,
             max_size=10,
+            init=_init_connection,
         )
     return _pool
 
@@ -131,6 +138,109 @@ async def update_topic_scores(scored_topics: list, batch_id: str) -> int:
         )
         count += 1
     return count
+
+
+# ── Fused Topics (AI-generated) ───────────────────────────────
+
+async def insert_fused_topics(
+    topics: list[dict],
+    embeddings: list[list[float]],
+    batch_id: str,
+) -> int:
+    """Insert AI-generated fused topics with their embeddings."""
+    pool = await get_pool()
+    import numpy as np
+    rows = []
+    for t, emb in zip(topics, embeddings):
+        rows.append((
+            t.get("title", ""),
+            np.array(emb, dtype=np.float32),
+            t.get("signal_types", []),
+            t.get("reasoning", ""),
+            t.get("suggested_angle", ""),
+            json.dumps(t.get("angles", {})),
+            t.get("source_urls", []),
+            t.get("source_queries", []),
+            float(t.get("viral_score", 0)),
+            float(t.get("seo_potential", 0)),
+            batch_id,
+        ))
+    await pool.executemany(
+        """
+        INSERT INTO fused_topics
+            (title, embedding, signal_types, reasoning, suggested_angle,
+             angles, source_urls, source_queries, viral_score, seo_potential, batch_id)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::uuid)
+        """,
+        rows,
+    )
+    return len(rows)
+
+
+async def update_fused_topic_scores(scored_topics: list, batch_id: str) -> int:
+    """Update fused topics with AI scores, decisions, and clusters after scoring."""
+    pool = await get_pool()
+    count = 0
+    for t in scored_topics:
+        title = t.title if hasattr(t, "title") else t.get("title", "")
+        await pool.execute(
+            """
+            UPDATE fused_topics
+            SET ai_score = $1, decision = $2, cluster = $3,
+                suggested_angle = $4, priority = $5, is_duplicate = $6
+            WHERE batch_id = $7::uuid AND LOWER(title) = LOWER($8)
+            """,
+            float(t.score if hasattr(t, "score") else 0),
+            t.decision if hasattr(t, "decision") else "IGNORE",
+            t.cluster if hasattr(t, "cluster") else "other",
+            t.suggested_angle if hasattr(t, "suggested_angle") else "",
+            t.priority.value if hasattr(t, "priority") and hasattr(t.priority, "value") else "medium",
+            t.is_duplicate if hasattr(t, "is_duplicate") else False,
+            batch_id,
+            title,
+        )
+        count += 1
+    return count
+
+
+async def find_similar_fused(
+    embedding: list[float],
+    threshold: float = 0.85,
+    days: int = 30,
+    limit: int = 5,
+) -> list[dict]:
+    """Find fused topics whose embedding is within cosine similarity threshold."""
+    import numpy as np
+    vec = np.array(embedding, dtype=np.float32)
+    rows = await fetch(
+        """
+        SELECT title, 1 - (embedding <=> $1) AS similarity
+        FROM fused_topics
+        WHERE created_at > NOW() - $2 * INTERVAL '1 day'
+          AND embedding IS NOT NULL
+        ORDER BY embedding <=> $1
+        LIMIT $3
+        """,
+        vec, days, limit,
+    )
+    return [
+        {"title": r["title"], "similarity": float(r["similarity"])}
+        for r in rows
+        if float(r["similarity"]) >= threshold
+    ]
+
+
+async def find_similar_fused_batch(
+    embeddings: list[list[float]],
+    threshold: float = 0.85,
+    days: int = 30,
+) -> list[list[dict]]:
+    """Check each embedding against recent fused topics for duplicates."""
+    results = []
+    for emb in embeddings:
+        similar = await find_similar_fused(emb, threshold=threshold, days=days)
+        results.append(similar)
+    return results
 
 
 # ── Content CRUD ─────────────────────────────────────────────

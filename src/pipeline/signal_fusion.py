@@ -22,7 +22,7 @@ def _classify(signals: list[dict]) -> dict[str, list[dict]]:
     return buckets
 
 
-async def fuse(signals: list[dict]) -> list[dict]:
+async def fuse(signals: list[dict], recent_titles: set[str] | None = None) -> list[dict]:
     """Cross-link signals and generate multi-signal hybrid topics via GPT-4o."""
     classified = _classify(signals)
 
@@ -40,6 +40,14 @@ async def fuse(signals: list[dict]) -> list[dict]:
     trend_block = "\n".join(f"- {s['title']} (eng:{s['engagement']})" for s in classified["trend"][:15])
     support_block = "\n".join(f"- {s['title']} (eng:{s['engagement']})" for s in classified["support"][:15])
 
+    avoid_block = ""
+    if recent_titles:
+        titles_list = "\n".join(f"- {t}" for t in sorted(recent_titles)[:50])
+        avoid_block = (
+            "RECENTLY PUBLISHED (do NOT generate topics similar to these):\n"
+            + titles_list + "\n\n"
+        )
+
     prompt = (
         "You are a topic strategist for 'mockreal', an AI mock interview platform.\n\n"
         "Below are signals from multiple sources classified by type.\n\n"
@@ -47,10 +55,12 @@ async def fuse(signals: list[dict]) -> list[dict]:
         "INTENT SIGNALS (Autocomplete + PAA):\n" + (intent_block or "(none)") + "\n\n"
         "TREND SIGNALS (Google Trends):\n" + (trend_block or "(none)") + "\n\n"
         "SUPPORT SIGNALS (News, Search, YouTube):\n" + (support_block or "(none)") + "\n\n"
-        "TASK:\n"
+        + avoid_block
+        + "TASK:\n"
         "1. Cross-link signals: find overlaps between pain↔intent, intent↔trend, pain↔trend.\n"
-        "2. Generate 8-15 HYBRID topic ideas, each based on at least 2 signal types.\n"
-        "3. For each topic generate 4 angles: emotional, seo, tactical, product.\n\n"
+        "2. Generate 12-20 HYBRID topic ideas, each based on at least 2 signal types.\n"
+        "3. For each topic generate 4 angles: emotional, seo, tactical, product.\n"
+        "4. Topics MUST be distinct from the recently published list above.\n\n"
         "TITLE RULES (CRITICAL — titles must pass as human-written):\n"
         "- Sound like a real blog post title, NOT a BuzzFeed headline or AI listicle.\n"
         "- AVOID these AI patterns: numbered lists ('7 Ways...', '10 Tips...'), "

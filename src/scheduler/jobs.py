@@ -29,6 +29,7 @@ from src.publishers.linkedin import LinkedInPublisher
 from src.publishers.medium import MediumPublisher
 from src.publishers.website import WebsitePublisher
 from src.storage import database as db
+from src.utils.ai_client import embed_texts
 from loguru import logger as log
 
 
@@ -51,9 +52,9 @@ async def main_pipeline() -> None:
                 log.warning("Ingestor {} failed: {}", i, batch)
         signal_batches = [b for b in raw_batches if isinstance(b, list)]
 
-        # 2. Normalize + deduplicate
+        # 2. Normalize + semantic deduplicate (embeds all signal titles)
         log.info("[2/8] Normalizing signals...")
-        signals = normalize_all(signal_batches)
+        signals, signal_emb_map = await normalize_all(signal_batches)
 
         # 3. Viral scoring
         log.info("[3/8] Scoring virality...")
@@ -64,13 +65,26 @@ async def main_pipeline() -> None:
         saved = await db.insert_signals(scored_signals, batch_id)
         log.info("Saved {} signals to DB (batch={})", saved, batch_id[:8])
 
-        # Merge with historical signals from past runs
+        # Merge with historical signals (embedding-based matching)
         historical = await db.fetch_recent_signals(days=7, exclude_batch=batch_id)
-        merged_signals = merge_with_history(scored_signals, historical)
+        merged_signals, signal_emb_map = await merge_with_history(
+            scored_signals, historical, fresh_embeddings=signal_emb_map,
+        )
 
-        # 4. Signal fusion (GPT-4o)
+        # 4. Signal fusion (GPT-4o) — pass recent titles so GPT avoids rehashing
         log.info("[4/8] Fusing signals into hybrid topics...")
-        fused_topics = await fuse(merged_signals)
+        recent_titles = await db.fetch_recent_titles(days=30)
+        fused_topics = await fuse(merged_signals, recent_titles=recent_titles)
+
+        # Embed fused topic titles and persist to fused_topics table
+        fused_titles = [t["title"] for t in fused_topics]
+        fused_embeddings = await embed_texts(fused_titles) if fused_titles else []
+        topic_emb_map: dict[str, list[float]] = {}
+        for title, emb in zip(fused_titles, fused_embeddings):
+            topic_emb_map[title.lower()] = emb
+        if fused_topics:
+            saved_fused = await db.insert_fused_topics(fused_topics, fused_embeddings, batch_id)
+            log.info("Saved {} fused topics with embeddings (batch={})", saved_fused, batch_id[:8])
 
         # 5. Content flywheel — derive from top performers
         log.info("[5/8] Expanding from top performers...")
@@ -79,11 +93,18 @@ async def main_pipeline() -> None:
         all_topics = fused_topics + derived_topics
         log.info("Total topics: {} fused + {} derived = {}", len(fused_topics), len(derived_topics), len(all_topics))
 
-        # 6. AI scoring + cluster adjustment
+        # Embed derived topic titles and merge into embedding map
+        derived_titles = [t["title"] for t in derived_topics if t["title"].lower() not in topic_emb_map]
+        if derived_titles:
+            derived_embs = await embed_texts(derived_titles)
+            for title, emb in zip(derived_titles, derived_embs):
+                topic_emb_map[title.lower()] = emb
+
+        # 6. AI scoring + embedding-based duplicate detection
         log.info("[6/8] Scoring {} topics...", len(all_topics))
         cluster_feedback = await db.fetch_cluster_feedback()
         feedback_dicts = [dict(r) for r in cluster_feedback]
-        scored_topics = await score(all_topics, feedback_dicts)
+        scored_topics = await score(all_topics, feedback_dicts, topic_embeddings=topic_emb_map)
 
         cluster_perf = {}
         for f in feedback_dicts:
@@ -94,25 +115,22 @@ async def main_pipeline() -> None:
                 }
         scored_topics = adjust(scored_topics, cluster_perf)
 
-        # Persist fused+scored topics to DB
-        fused_saved = await db.insert_signals(
-            [{"source": "fused", "title": t.title, "engagement": 0,
-              "viral_score": t.viral_score} for t in scored_topics],
-            batch_id,
-        )
+        # Update raw signal rows + fused topics with scoring results
         updated = await db.update_topic_scores(scored_topics, batch_id)
-        log.info("Saved {} fused topics, updated {} scores", fused_saved, updated)
+        updated_fused = await db.update_fused_topic_scores(scored_topics, batch_id)
+        log.info("Updated {} raw topic scores, {} fused topic scores", updated, updated_fused)
 
-        # 7. Filter, deduplicate against DB, apply blacklist
+        # 7. Filter, vector-deduplicate against DB + intra-batch, apply blacklist
         log.info("[7/8] Filtering...")
-        existing_titles = await db.fetch_recent_titles(days=30)
-        writable = filter_and_prioritize(scored_topics, existing_titles)
-        log.info("{} topics to write (after DB dedup + blacklist)", len(writable))
+        writable = await filter_and_prioritize(scored_topics, recent_titles, topic_emb_map)
+        log.info("{} topics to write (after DB dedup + vector dedup + blacklist)", len(writable))
 
         # 8. Generate content for each topic
-        log.info("[8/8] Generating content for {} topics...", min(len(writable), 8))
+        cap = settings.max_articles_per_run
+        to_write = writable[:cap]
+        log.info("[8/8] Generating content for {} topics (cap={})...", len(to_write), cap)
         success_count = 0
-        for topic in writable[:8]:
+        for topic in to_write:
             try:
                 pkg = await generate(topic)
                 pkg = await humanize(pkg)
@@ -152,7 +170,7 @@ async def main_pipeline() -> None:
                 log.error("✗ Failed topic '{}': {}", topic.title, exc, exc_info=True)
 
         log.info("========== Pipeline complete: {}/{} articles generated ==========",
-                 success_count, min(len(writable), 8))
+                 success_count, len(to_write))
     except Exception as exc:
         log.error("Pipeline failed: {}", exc, exc_info=True)
 

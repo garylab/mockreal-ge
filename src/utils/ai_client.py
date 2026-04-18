@@ -70,6 +70,25 @@ async def chat_claude(
         return resp.content[0].text if resp.content else ""
 
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10))
+async def embed_text(text: str, model: str = "text-embedding-3-small") -> list[float]:
+    """Return a 1536-dim embedding vector for the given text."""
+    async with ai_semaphore:
+        log.debug("Embedding call: {}...", text[:60])
+        resp = await get_openai().embeddings.create(model=model, input=text)
+        return resp.data[0].embedding
+
+
+async def embed_texts(texts: list[str], model: str = "text-embedding-3-small") -> list[list[float]]:
+    """Batch-embed multiple texts in a single API call."""
+    if not texts:
+        return []
+    async with ai_semaphore:
+        log.debug("Batch embedding call: {} texts", len(texts))
+        resp = await get_openai().embeddings.create(model=model, input=texts)
+        return [d.embedding for d in sorted(resp.data, key=lambda d: d.index)]
+
+
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=15))
 async def generate_image_dalle(prompt: str, size: str = "1792x1024") -> str:
     async with ai_semaphore:

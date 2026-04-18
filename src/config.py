@@ -56,6 +56,9 @@ class Settings(BaseSettings):
     score_threshold: int = 7
     viral_threshold: int = 8
 
+    # Content generation
+    max_articles_per_run: int = 3
+
     # Rate limiting
     max_concurrent_api: int = 5
     max_concurrent_ai: int = 2

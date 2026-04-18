@@ -1,4 +1,10 @@
 -- ============================================================
+-- EXTENSION: pgvector for embedding-based deduplication
+-- ============================================================
+
+CREATE EXTENSION IF NOT EXISTS vector;
+
+-- ============================================================
 -- ENUM-LIKE DOMAINS
 -- ============================================================
 
@@ -59,6 +65,33 @@ CREATE TABLE IF NOT EXISTS topics (
   batch_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
   fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
   scored_at       TIMESTAMPTZ
+);
+
+-- ============================================================
+-- TABLE: fused_topics
+-- AI-generated hybrid topics from signal fusion + scoring.
+-- Kept separate from raw signals in `topics`.
+-- ============================================================
+
+CREATE TABLE IF NOT EXISTS fused_topics (
+  id              BIGSERIAL        PRIMARY KEY,
+  title           TEXT             NOT NULL,
+  embedding       vector(1536),
+  signal_types    TEXT[]           NOT NULL DEFAULT '{}',
+  reasoning       TEXT             NOT NULL DEFAULT '',
+  suggested_angle TEXT             NOT NULL DEFAULT '',
+  angles          JSONB            NOT NULL DEFAULT '{}'::jsonb,
+  source_urls     TEXT[]           NOT NULL DEFAULT '{}',
+  source_queries  TEXT[]           NOT NULL DEFAULT '{}',
+  ai_score        NUMERIC(4,1),
+  viral_score     NUMERIC(4,1)     NOT NULL DEFAULT 0,
+  seo_potential   NUMERIC(4,1)     NOT NULL DEFAULT 0,
+  decision        TEXT             NOT NULL DEFAULT 'IGNORE',
+  cluster         TEXT,
+  is_duplicate    BOOLEAN          NOT NULL DEFAULT FALSE,
+  priority        priority_level   DEFAULT 'medium',
+  batch_id        UUID             NOT NULL DEFAULT gen_random_uuid(),
+  created_at      TIMESTAMPTZ      NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
@@ -244,6 +277,12 @@ CREATE INDEX IF NOT EXISTS idx_topics_source       ON topics (source);
 CREATE INDEX IF NOT EXISTS idx_topics_batch         ON topics (batch_id);
 CREATE INDEX IF NOT EXISTS idx_topics_cluster       ON topics (cluster);
 CREATE INDEX IF NOT EXISTS idx_topics_fetched       ON topics (fetched_at DESC);
+
+-- fused_topics
+CREATE INDEX IF NOT EXISTS idx_fused_batch           ON fused_topics (batch_id);
+CREATE INDEX IF NOT EXISTS idx_fused_created         ON fused_topics (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fused_decision        ON fused_topics (decision);
+CREATE INDEX IF NOT EXISTS idx_fused_embedding       ON fused_topics USING hnsw (embedding vector_cosine_ops);
 
 -- content
 CREATE INDEX IF NOT EXISTS idx_content_status       ON content (status);
