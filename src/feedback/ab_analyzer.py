@@ -25,8 +25,8 @@ async def analyze_ab_results() -> dict:
             "total_signups": int(r["total_signups"]),
         }
 
-    a = stats.get("a", {})
-    b = stats.get("b", {})
+    a = stats.get("A", {})
+    b = stats.get("B", {})
 
     a_score = a.get("avg_conv", 0) * 0.6 + a.get("avg_ctr", 0) * 0.4
     b_score = b.get("avg_conv", 0) * 0.6 + b.get("avg_ctr", 0) * 0.4
@@ -35,14 +35,14 @@ async def analyze_ab_results() -> dict:
     confidence = "high" if total_samples >= 50 else "medium" if total_samples >= 20 else "low"
 
     if a_score > b_score * 1.1:
-        winner = "a"
+        winner = "A"
     elif b_score > a_score * 1.1:
-        winner = "b"
+        winner = "B"
     else:
         winner = "tie"
 
     log.info(
-        "A/B results: variant_a=%.2f, variant_b=%.2f, winner=%s (confidence=%s, n=%d)",
+        "A/B results: variant_a={:.2f}, variant_b={:.2f}, winner={} (confidence={}, n={})",
         a_score, b_score, winner, confidence, total_samples,
     )
     return {"winner": winner, "confidence": confidence, "stats": stats}
@@ -52,6 +52,6 @@ async def get_preferred_variant() -> str:
     """Return the winning CTA variant for publishing, or random if tie/low confidence."""
     import random
     result = await analyze_ab_results()
-    if result["confidence"] in ("high", "medium") and result["winner"] in ("a", "b"):
+    if result["confidence"] in ("high", "medium") and result["winner"] in ("A", "B"):
         return result["winner"]
-    return random.choice(["a", "b"])
+    return random.choice(["A", "B"])
