@@ -54,17 +54,8 @@ CREATE TABLE IF NOT EXISTS topics (
   engagement      INTEGER         NOT NULL DEFAULT 0,
   viral_score     NUMERIC(4,1)   NOT NULL DEFAULT 0,
   subreddit       TEXT,
-  cluster         TEXT,
-  is_duplicate    BOOLEAN         NOT NULL DEFAULT FALSE,
-  ai_score        NUMERIC(4,1),
-  score_adjustment INTEGER        NOT NULL DEFAULT 0,
-  final_score     NUMERIC(4,1),
-  decision        TEXT,
-  suggested_angle TEXT,
-  priority        priority_level DEFAULT 'medium',
   batch_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
-  fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW(),
-  scored_at       TIMESTAMPTZ
+  fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
@@ -103,10 +94,6 @@ CREATE TABLE IF NOT EXISTS clusters (
   id              SERIAL          PRIMARY KEY,
   slug            TEXT            UNIQUE NOT NULL,
   label           TEXT            NOT NULL,
-  avg_ctr         NUMERIC(6,2)   NOT NULL DEFAULT 0,
-  avg_conversion  NUMERIC(6,2)   NOT NULL DEFAULT 0,
-  total_posts     INTEGER         NOT NULL DEFAULT 0,
-  score_boost     INTEGER         NOT NULL DEFAULT 0,
   updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
 );
 
@@ -131,8 +118,9 @@ ON CONFLICT (slug) DO NOTHING;
 CREATE TABLE IF NOT EXISTS content (
   id                    BIGSERIAL                PRIMARY KEY,
   content_id            TEXT                     UNIQUE NOT NULL,
-  topic_id              BIGINT                   REFERENCES topics(id) ON DELETE SET NULL,
+  fused_topic_id        BIGINT                   REFERENCES fused_topics(id) ON DELETE SET NULL,
   title                 TEXT                     NOT NULL,
+  title_embedding       vector(1536),
   article_html          TEXT,
   medium_article        TEXT,
   outline               JSONB                    NOT NULL DEFAULT '[]'::jsonb,
@@ -142,8 +130,6 @@ CREATE TABLE IF NOT EXISTS content (
   meta_description      TEXT,
   image_url             TEXT,
   score                 NUMERIC(4,1)             NOT NULL DEFAULT 0,
-  viral_score           NUMERIC(4,1)             NOT NULL DEFAULT 0,
-  source                TEXT,
   cluster               TEXT                     REFERENCES clusters(slug) ON DELETE SET NULL,
   suggested_angle       TEXT,
   priority              priority_level  NOT NULL DEFAULT 'medium',
@@ -152,7 +138,6 @@ CREATE TABLE IF NOT EXISTS content (
   active_cta            cta_variant     NOT NULL DEFAULT 'A',
   status                content_status  NOT NULL DEFAULT 'draft',
   iteration_count       INTEGER                  NOT NULL DEFAULT 0,
-  approved_by           TEXT,
   approved_at           TIMESTAMPTZ,
   created_at            TIMESTAMPTZ              NOT NULL DEFAULT NOW(),
   updated_at            TIMESTAMPTZ              NOT NULL DEFAULT NOW()
@@ -275,7 +260,6 @@ CREATE TABLE IF NOT EXISTS dashboard_snapshots (
 -- topics
 CREATE INDEX IF NOT EXISTS idx_topics_source       ON topics (source);
 CREATE INDEX IF NOT EXISTS idx_topics_batch         ON topics (batch_id);
-CREATE INDEX IF NOT EXISTS idx_topics_cluster       ON topics (cluster);
 CREATE INDEX IF NOT EXISTS idx_topics_fetched       ON topics (fetched_at DESC);
 
 -- fused_topics
@@ -285,6 +269,7 @@ CREATE INDEX IF NOT EXISTS idx_fused_decision        ON fused_topics (decision);
 CREATE INDEX IF NOT EXISTS idx_fused_embedding       ON fused_topics USING hnsw (embedding vector_cosine_ops);
 
 -- content
+CREATE INDEX IF NOT EXISTS idx_content_embedding    ON content USING hnsw (title_embedding vector_cosine_ops);
 CREATE INDEX IF NOT EXISTS idx_content_status       ON content (status);
 CREATE INDEX IF NOT EXISTS idx_content_cluster      ON content (cluster);
 CREATE INDEX IF NOT EXISTS idx_content_priority     ON content (priority);
@@ -349,7 +334,6 @@ SELECT
   c.title,
   c.cluster,
   c.score,
-  c.viral_score,
   c.priority,
   c.status,
   c.active_cta,
@@ -370,7 +354,7 @@ SELECT
   END                                    AS overall_conversion
 FROM content c
 LEFT JOIN performance p ON c.content_id = p.content_id
-GROUP BY c.content_id, c.title, c.cluster, c.score, c.viral_score,
+GROUP BY c.content_id, c.title, c.cluster, c.score,
          c.priority, c.status, c.active_cta, c.iteration_count, c.created_at;
 
 -- ============================================================
@@ -382,7 +366,6 @@ CREATE OR REPLACE VIEW cluster_performance AS
 SELECT
   cl.slug                                AS cluster,
   cl.label,
-  cl.score_boost,
   COUNT(DISTINCT c.content_id)           AS total_content,
   COALESCE(AVG(p.ctr), 0)               AS avg_ctr,
   COALESCE(AVG(p.conversion_rate), 0)    AS avg_conversion,
@@ -391,7 +374,7 @@ SELECT
 FROM clusters cl
 LEFT JOIN content c   ON cl.slug = c.cluster AND c.status IN ('approved', 'published')
 LEFT JOIN performance p ON c.content_id = p.content_id
-GROUP BY cl.slug, cl.label, cl.score_boost, cl.updated_at;
+GROUP BY cl.slug, cl.label, cl.updated_at;
 
 -- ============================================================
 -- VIEW: low_ctr_candidates

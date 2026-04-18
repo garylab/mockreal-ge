@@ -29,7 +29,7 @@ from src.publishers.linkedin import LinkedInPublisher
 from src.publishers.medium import MediumPublisher
 from src.publishers.website import WebsitePublisher
 from src.storage import database as db
-from src.utils.ai_client import embed_texts
+from src.utils.ai_client import embed_text, embed_texts
 from loguru import logger as log
 
 
@@ -82,9 +82,10 @@ async def main_pipeline() -> None:
         topic_emb_map: dict[str, list[float]] = {}
         for title, emb in zip(fused_titles, fused_embeddings):
             topic_emb_map[title.lower()] = emb
+        fused_id_map: dict[str, int] = {}
         if fused_topics:
-            saved_fused = await db.insert_fused_topics(fused_topics, fused_embeddings, batch_id)
-            log.info("Saved {} fused topics with embeddings (batch={})", saved_fused, batch_id[:8])
+            fused_id_map = await db.insert_fused_topics(fused_topics, fused_embeddings, batch_id)
+            log.info("Saved {} fused topics with embeddings (batch={})", len(fused_id_map), batch_id[:8])
 
         # 5. Content flywheel — derive from top performers
         log.info("[5/8] Expanding from top performers...")
@@ -115,10 +116,9 @@ async def main_pipeline() -> None:
                 }
         scored_topics = adjust(scored_topics, cluster_perf)
 
-        # Update raw signal rows + fused topics with scoring results
-        updated = await db.update_topic_scores(scored_topics, batch_id)
+        # Update fused topics with scoring results
         updated_fused = await db.update_fused_topic_scores(scored_topics, batch_id)
-        log.info("Updated {} raw topic scores, {} fused topic scores", updated, updated_fused)
+        log.info("Updated {} fused topic scores", updated_fused)
 
         # 7. Filter, vector-deduplicate against DB + intra-batch, apply blacklist
         log.info("[7/8] Filtering...")
@@ -132,10 +132,22 @@ async def main_pipeline() -> None:
         success_count = 0
         for topic in to_write:
             try:
+                # Final safety check: embedding-based duplicate against content table
+                title_emb = topic_emb_map.get(topic.title.lower())
+                if title_emb:
+                    existing = await db.find_similar_content(title_emb, threshold=0.85, days=60)
+                    if existing:
+                        log.warning("Skipping '{}' — too similar to existing article '{}' (sim={:.3f})",
+                                    topic.title, existing["title"], existing["similarity"])
+                        continue
+
                 pkg = await generate(topic)
                 pkg = await humanize(pkg)
                 pkg = await enrich(pkg)
                 pkg = await generate_featured(pkg)
+
+                # Embed the final article title (may differ from topic title after generation)
+                final_emb = await embed_text(pkg.article_title)
 
                 await db.insert_draft(
                     content_id=pkg.content_id,
@@ -154,6 +166,8 @@ async def main_pipeline() -> None:
                     suggested_angle=topic.suggested_angle,
                     priority=topic.priority.value,
                     image_url=pkg.featured_image_url,
+                    title_embedding=final_emb,
+                    fused_topic_id=fused_id_map.get(topic.title.lower()),
                 )
 
                 if settings.auto_approve:

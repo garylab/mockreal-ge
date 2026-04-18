@@ -48,8 +48,9 @@ async def iterate_low_ctr(ctr_threshold: float = 1.0, limit: int = 5) -> int:
 
             new_html = data.get("article_html", row["article_html"])
             new_social = data.get("social_posts", {})
+            new_title = data.get("article_title")
 
-            await db.update_regenerated(content_id, new_html, new_social)
+            await db.update_regenerated(content_id, new_html, new_social, title=new_title)
             regen_count += 1
             log.info("Regenerated content {} ('{}')", content_id, row["title"][:50])
         except Exception as exc:

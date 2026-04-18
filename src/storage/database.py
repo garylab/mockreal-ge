@@ -67,7 +67,6 @@ async def fetch_recent_signals(days: int = 7, exclude_batch: str = "") -> list[d
                COUNT(*) OVER (PARTITION BY LOWER(title)) AS occurrence_count
         FROM topics
         WHERE fetched_at > NOW() - $1 * INTERVAL '1 day'
-          AND source != 'fused'
           AND ($2 = '' OR batch_id::text != $2)
         ORDER BY fetched_at DESC
         """,
@@ -112,48 +111,31 @@ async def insert_signals(signals: list[dict], batch_id: str) -> int:
     return len(rows)
 
 
-async def update_topic_scores(scored_topics: list, batch_id: str) -> int:
-    """Update topics with AI scores, decisions, and clusters after scoring."""
-    pool = await get_pool()
-    count = 0
-    for t in scored_topics:
-        title = t.title if hasattr(t, "title") else t.get("title", "")
-        await pool.execute(
-            """
-            UPDATE topics
-            SET ai_score = $1, final_score = $2, decision = $3,
-                cluster = $4, suggested_angle = $5, priority = $6,
-                score_adjustment = $7, scored_at = NOW()
-            WHERE batch_id = $8::uuid AND LOWER(title) = LOWER($9)
-            """,
-            float(t.original_score if hasattr(t, "original_score") else 0),
-            float(t.score if hasattr(t, "score") else 0),
-            t.decision if hasattr(t, "decision") else "IGNORE",
-            t.cluster if hasattr(t, "cluster") else "other",
-            t.suggested_angle if hasattr(t, "suggested_angle") else "",
-            t.priority.value if hasattr(t, "priority") and hasattr(t.priority, "value") else "medium",
-            int(t.score_adjustment if hasattr(t, "score_adjustment") else 0),
-            batch_id,
-            title,
-        )
-        count += 1
-    return count
-
-
 # ── Fused Topics (AI-generated) ───────────────────────────────
 
 async def insert_fused_topics(
     topics: list[dict],
     embeddings: list[list[float]],
     batch_id: str,
-) -> int:
-    """Insert AI-generated fused topics with their embeddings."""
+) -> dict[str, int]:
+    """Insert AI-generated fused topics with embeddings.
+
+    Returns a mapping of lowercase title -> fused_topics.id for linking to content.
+    """
     pool = await get_pool()
     import numpy as np
-    rows = []
+    title_to_id: dict[str, int] = {}
     for t, emb in zip(topics, embeddings):
-        rows.append((
-            t.get("title", ""),
+        title = t.get("title", "")
+        row_id = await pool.fetchval(
+            """
+            INSERT INTO fused_topics
+                (title, embedding, signal_types, reasoning, suggested_angle,
+                 angles, source_urls, source_queries, viral_score, seo_potential, batch_id)
+            VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::uuid)
+            RETURNING id
+            """,
+            title,
             np.array(emb, dtype=np.float32),
             t.get("signal_types", []),
             t.get("reasoning", ""),
@@ -164,17 +146,9 @@ async def insert_fused_topics(
             float(t.get("viral_score", 0)),
             float(t.get("seo_potential", 0)),
             batch_id,
-        ))
-    await pool.executemany(
-        """
-        INSERT INTO fused_topics
-            (title, embedding, signal_types, reasoning, suggested_angle,
-             angles, source_urls, source_queries, viral_score, seo_potential, batch_id)
-        VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::uuid)
-        """,
-        rows,
-    )
-    return len(rows)
+        )
+        title_to_id[title.lower()] = row_id
+    return title_to_id
 
 
 async def update_fused_topic_scores(scored_topics: list, batch_id: str) -> int:
@@ -245,6 +219,33 @@ async def find_similar_fused_batch(
 
 # ── Content CRUD ─────────────────────────────────────────────
 
+async def find_similar_content(
+    embedding: list[float],
+    threshold: float = 0.85,
+    days: int = 60,
+) -> dict | None:
+    """Check if a semantically similar article already exists in content table.
+
+    Returns the closest match above threshold, or None.
+    """
+    import numpy as np
+    vec = np.array(embedding, dtype=np.float32)
+    row = await fetchrow(
+        """
+        SELECT content_id, title, 1 - (title_embedding <=> $1) AS similarity
+        FROM content
+        WHERE created_at > NOW() - $2 * INTERVAL '1 day'
+          AND title_embedding IS NOT NULL
+        ORDER BY title_embedding <=> $1
+        LIMIT 1
+        """,
+        vec, days,
+    )
+    if row and float(row["similarity"]) >= threshold:
+        return {"content_id": row["content_id"], "title": row["title"], "similarity": float(row["similarity"])}
+    return None
+
+
 async def insert_draft(
     content_id: str,
     title: str,
@@ -262,20 +263,24 @@ async def insert_draft(
     suggested_angle: str,
     priority: str,
     image_url: str = "",
+    title_embedding: list[float] | None = None,
+    fused_topic_id: int | None = None,
 ) -> None:
+    import numpy as np
+    emb = np.array(title_embedding, dtype=np.float32) if title_embedding else None
     await execute(
         """
         INSERT INTO content
-            (content_id, title, cluster, score, article_html, medium_article,
-             seo_keywords, meta_description, social_posts, social_posts_variant_b,
-             cta_variant_a, cta_variant_b, outline, suggested_angle, priority,
-             image_url, status)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft')
+            (content_id, fused_topic_id, title, title_embedding, cluster, score,
+             article_html, medium_article, seo_keywords, meta_description,
+             social_posts, social_posts_variant_b, cta_variant_a, cta_variant_b,
+             outline, suggested_angle, priority, image_url, status)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,'draft')
         ON CONFLICT (content_id) DO NOTHING
         """,
-        content_id, title, cluster, score, article_html, medium_article,
-        json.dumps(seo_keywords), meta_description, json.dumps(social_posts),
-        json.dumps(social_posts_variant_b),
+        content_id, fused_topic_id, title, emb, cluster, score,
+        article_html, medium_article, json.dumps(seo_keywords), meta_description,
+        json.dumps(social_posts), json.dumps(social_posts_variant_b),
         cta_a, cta_b, json.dumps(outline), suggested_angle, priority,
         image_url,
     )
@@ -403,14 +408,22 @@ async def fetch_low_ctr_content(threshold: float = 1.0, limit: int = 5) -> list[
     )
 
 
-async def update_regenerated(content_id: str, article_html: str, social_posts: dict) -> None:
+async def update_regenerated(
+    content_id: str, article_html: str, social_posts: dict,
+    title: str | None = None,
+) -> None:
+    title_clause = ", title = $4" if title else ""
+    args: list = [content_id, article_html, json.dumps(social_posts)]
+    if title:
+        args.append(title)
     await execute(
-        """
+        f"""
         UPDATE content
-        SET article_html = $2, social_posts = $3, updated_at = NOW()
+        SET article_html = $2, social_posts = $3,
+            iteration_count = iteration_count + 1{title_clause}
         WHERE content_id = $1
         """,
-        content_id, article_html, json.dumps(social_posts),
+        *args,
     )
 
 
