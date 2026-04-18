@@ -35,6 +35,7 @@ class WebsitePublisher(BasePublisher):
             "title": pkg.article_title,
             "slug": _slugify(pkg.article_title),
             "content": html,
+            "main_image": pkg.featured_image_url,
             "status": "published",
         }
 
