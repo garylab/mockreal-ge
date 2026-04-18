@@ -73,18 +73,20 @@ async def score(
         idx = st.get("index", 1) - 1
         orig = topics[idx] if 0 <= idx < len(topics) else {}
         results.append(ScoredTopic(
-            title=st.get("original_title", orig.get("title", "")),
+            title=st.get("original_title") or orig.get("title", ""),
             source=orig.get("source", "fused"),
-            score=st.get("score", 0),
-            reasoning=st.get("reasoning", ""),
-            decision=st.get("decision", "IGNORE"),
-            suggested_angle=st.get("suggested_angle", orig.get("suggested_angle", "")),
-            cluster=st.get("cluster", "other"),
+            score=st.get("score") or 0,
+            reasoning=st.get("reasoning") or "",
+            decision=st.get("decision") or "IGNORE",
+            suggested_angle=st.get("suggested_angle") or orig.get("suggested_angle") or "",
+            cluster=st.get("cluster") or "other",
             is_duplicate=st.get("is_duplicate", False),
             viral_score=orig.get("viral_score", 0),
             seo_potential=orig.get("seo_potential", 0),
             signal_types=orig.get("signal_types", []),
             angles=orig.get("angles", {}),
+            source_urls=orig.get("source_urls", []),
+            source_queries=orig.get("source_queries", []),
             derivation_strategy=orig.get("derivation_strategy"),
             parent_title=orig.get("parent_title"),
         ))

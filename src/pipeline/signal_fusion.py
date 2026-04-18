@@ -26,6 +26,15 @@ async def fuse(signals: list[dict]) -> list[dict]:
     """Cross-link signals and generate multi-signal hybrid topics via GPT-4o."""
     classified = _classify(signals)
 
+    url_index: dict[str, list[str]] = {}
+    query_index: dict[str, list[str]] = {}
+    for bucket_name, bucket_signals in classified.items():
+        for s in bucket_signals:
+            title_key = s["title"].lower().strip()
+            if s.get("url"):
+                url_index.setdefault(title_key, []).append(s["url"])
+            query_index.setdefault(title_key, []).append(s["title"])
+
     pain_block = "\n".join(f"- {s['title']} (eng:{s['engagement']})" for s in classified["pain"][:20])
     intent_block = "\n".join(f"- {s['title']} (eng:{s['engagement']})" for s in classified["intent"][:20])
     trend_block = "\n".join(f"- {s['title']} (eng:{s['engagement']})" for s in classified["trend"][:15])
@@ -74,6 +83,16 @@ async def fuse(signals: list[dict]) -> list[dict]:
     topics = data.get("fused_topics", [])
     results = []
     for t in topics:
+        matched_urls: list[str] = []
+        matched_queries: list[str] = []
+        title_words = set(t.get("title", "").lower().split())
+        for sig_title, urls in url_index.items():
+            if len(title_words & set(sig_title.split())) >= 2:
+                matched_urls.extend(urls)
+        for sig_title, queries in query_index.items():
+            if len(title_words & set(sig_title.split())) >= 2:
+                matched_queries.extend(queries)
+
         results.append({
             "title": t.get("title", ""),
             "source": "fused",
@@ -83,6 +102,8 @@ async def fuse(signals: list[dict]) -> list[dict]:
             "angles": t.get("angles", {}),
             "viral_score": 6,
             "seo_potential": 7,
+            "source_urls": list(dict.fromkeys(matched_urls))[:10],
+            "source_queries": list(dict.fromkeys(matched_queries))[:10],
         })
     log.info("Fused {} hybrid topics from {} signals", len(results), len(signals))
     return results

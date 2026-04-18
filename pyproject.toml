@@ -17,6 +17,10 @@ dependencies = [
     "openai>=1.55",
     "anthropic>=0.39",
     "loguru>=0.7",
+    "playwright>=1.58.0",
+    "seaborn>=0.13.2",
+    "matplotlib>=3.10.8",
+    "pandas>=3.0.2",
 ]
 
 [dependency-groups]

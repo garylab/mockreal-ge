@@ -55,6 +55,8 @@ class ScoredTopic(BaseModel):
     signal_types: list[str] = Field(default_factory=list)
     angles: dict[str, str] = Field(default_factory=dict)
     priority: Priority = Priority.medium
+    source_urls: list[str] = Field(default_factory=list)
+    source_queries: list[str] = Field(default_factory=list)
     # Derived-topic fields
     derivation_strategy: str | None = None
     parent_title: str | None = None
