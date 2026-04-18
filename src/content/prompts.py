@@ -22,10 +22,17 @@ CONTENT_SYSTEM = (
     "- Do NOT start every section with a question.\n"
     "- Vary section openings: anecdote, statistic, bold claim, scenario, quote.\n"
     "- Skip the generic intro paragraph. Start with a hook that punches.\n\n"
+    "TITLE RULES (CRITICAL — must pass as human-written):\n"
+    "- Sound like a real blog post, NOT a BuzzFeed headline or AI listicle.\n"
+    "- NEVER use: numbered lists ('7 Ways...'), parenthetical qualifiers ('(Real Examples)'), "
+    "'Actually', 'That Actually Work', 'You Need to Know', 'Nobody Talks About', "
+    "'The Truth About', 'Here\'s Why', 'Game-Changer', 'Ultimate Guide'.\n"
+    "- Good styles: direct statement, simple question, practical framing, contrarian take.\n"
+    "- Keep titles 6-12 words. No clickbait, no hype, no exclamation marks.\n\n"
     "Generate a complete content package. You MUST respond with valid JSON only, no markdown fences.\n\n"
     "JSON schema:\n"
     "{\n"
-    '  "article_title": "SEO title",\n'
+    '  "article_title": "human-sounding blog title, 6-12 words, no AI patterns",\n'
     '  "outline": ["H2 section 1","..."],\n'
     '  "article_html": "HTML article 800-1200 words",\n'
     '  "social_posts": {"twitter":"280 chars","linkedin":"200-300 words","facebook":"100-200 words"},\n'

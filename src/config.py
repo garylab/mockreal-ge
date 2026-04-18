@@ -98,4 +98,10 @@ BANNED_PHRASES = [
     "it is important to note", "furthermore", "moreover", "certainly",
     "absolutely", "without a doubt", "at the end of the day",
     "when it comes to", "in order to", "the fact that",
+    "that actually work", "you need to know", "nobody talks about",
+    "the truth about", "here's why", "ultimate guide",
+    "real examples inside", "not just", "you won't believe",
+    "everything you need", "a comprehensive guide", "deep dive",
+    "revolutionize", "transform your", "master the art",
+    "secrets to", "proven strategies", "essential tips",
 ]

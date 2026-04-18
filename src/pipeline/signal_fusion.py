@@ -42,6 +42,17 @@ async def fuse(signals: list[dict]) -> list[dict]:
         "1. Cross-link signals: find overlaps between pain↔intent, intent↔trend, pain↔trend.\n"
         "2. Generate 8-15 HYBRID topic ideas, each based on at least 2 signal types.\n"
         "3. For each topic generate 4 angles: emotional, seo, tactical, product.\n\n"
+        "TITLE RULES (CRITICAL — titles must pass as human-written):\n"
+        "- Sound like a real blog post title, NOT a BuzzFeed headline or AI listicle.\n"
+        "- AVOID these AI patterns: numbered lists ('7 Ways...', '10 Tips...'), "
+        "parenthetical qualifiers ('(Real Examples Inside)', '(Not Just X)'), "
+        "'Actually', 'That Actually Work', 'You Need to Know', 'Nobody Talks About', "
+        "'The Truth About', 'Here\'s Why', 'Game-Changer', 'Ultimate Guide'.\n"
+        "- Good title styles: direct statement ('Mock interviews won\'t fix bad answers'), "
+        "simple question ('Why do most interview prep tools miss the point?'), "
+        "practical framing ('What I learned from 50 mock interviews'), "
+        "contrarian take ('Stop memorizing interview answers').\n"
+        "- Keep titles 6-12 words. No clickbait, no hype, no exclamation marks.\n\n"
         'Return JSON: {"fused_topics": [{"title":"...","signals_used":["pain","intent"],'
         '"reasoning":"...","suggested_angle":"...","angles":{"emotional":"...","seo":"...",'
         '"tactical":"...","product":"..."}}]}'
