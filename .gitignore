@@ -1,0 +1,11 @@
+.env
+n8nfiles/
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+dist/
+build/
+logs/
+.python-version
+.DS_Store
