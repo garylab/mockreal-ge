@@ -66,6 +66,9 @@ class Settings(BaseSettings):
     # Publish scheduling (comma-separated hours in 24h format, e.g. "8,12,18")
     publish_hours: str = "8,12,18"
 
+    # Auto-approve drafts without Telegram (useful for local debugging)
+    auto_approve: bool = False
+
     @property
     def dsn(self) -> str:
         return f"postgresql://{self.db_user}:{self.db_pass}@{self.db_host}:{self.db_port}/{self.db_name}"

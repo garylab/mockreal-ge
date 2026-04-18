@@ -32,7 +32,7 @@ async def humanize(pkg: ContentPackage) -> ContentPackage:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        log.warning("Humanize parse failed for '%s', keeping original", pkg.article_title)
+        log.warning("Humanize parse failed for '{}', keeping original", pkg.article_title)
         return pkg
 
     if data.get("article_html"):
@@ -45,5 +45,5 @@ async def humanize(pkg: ContentPackage) -> ContentPackage:
         pkg.social_posts_variant_b = data["social_posts_variant_b"]
     pkg.humanized = True
 
-    log.info("Humanized content: '%s'", pkg.article_title)
+    log.info("Humanized content: '{}'", pkg.article_title)
     return pkg

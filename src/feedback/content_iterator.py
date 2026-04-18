@@ -51,9 +51,9 @@ async def iterate_low_ctr(ctr_threshold: float = 1.0, limit: int = 5) -> int:
 
             await db.update_regenerated(content_id, new_html, new_social)
             regen_count += 1
-            log.info("Regenerated content %s ('%s')", content_id, row["title"][:50])
+            log.info("Regenerated content {} ('{}')", content_id, row["title"][:50])
         except Exception as exc:
-            log.warning("Failed to regenerate %s: %s", row.get("content_id", "?"), exc)
+            log.warning("Failed to regenerate {}: {}", row.get("content_id", "?"), exc)
 
-    log.info("Regenerated %d/%d low-CTR articles", regen_count, len(rows))
+    log.info("Regenerated {}/{} low-CTR articles", regen_count, len(rows))
     return regen_count

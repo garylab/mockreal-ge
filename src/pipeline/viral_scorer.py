@@ -44,5 +44,5 @@ def score(signals: list[RawSignal]) -> list[dict]:
             "seo_potential": seo,
             "extra": sig.extra,
         })
-    log.info("Scored %d signals for virality", len(results))
+    log.info("Scored {} signals for virality", len(results))
     return results

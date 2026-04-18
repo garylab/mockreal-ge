@@ -28,7 +28,7 @@ async def generate(topic: ScoredTopic) -> ContentPackage:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        log.error("Failed to parse content JSON for topic: %s", topic.title)
+        log.error("Failed to parse content JSON for topic: {}", topic.title)
         data = {"article_title": topic.title, "article_html": cleaned}
 
     pkg = ContentPackage(
@@ -45,5 +45,5 @@ async def generate(topic: ScoredTopic) -> ContentPackage:
         cta_variant_a=data.get("cta_variant_a", ""),
         cta_variant_b=data.get("cta_variant_b", ""),
     )
-    log.info("Generated content: '%s' (%d chars HTML)", pkg.article_title, len(pkg.article_html))
+    log.info("Generated content: '{}' ({} chars HTML)", pkg.article_title, len(pkg.article_html))
     return pkg

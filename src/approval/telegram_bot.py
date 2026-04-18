@@ -15,7 +15,7 @@ _BASE = "https://api.telegram.org/bot{token}"
 async def send_for_approval(pkg: ContentPackage) -> None:
     """Send a Telegram message with inline Approve/Reject buttons."""
     if not settings.telegram_bot_token or not settings.telegram_chat_id:
-        log.warning("Telegram not configured, skipping approval for '%s'", pkg.article_title)
+        log.warning("Telegram not configured, skipping approval for '{}'", pkg.article_title)
         return
 
     preview = pkg.article_html[:400].replace("<", "&lt;").replace(">", "&gt;")
@@ -49,6 +49,6 @@ async def send_for_approval(pkg: ContentPackage) -> None:
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(url, json=payload)
         if resp.status_code != 200:
-            log.error("Telegram send failed: %s", resp.text)
+            log.error("Telegram send failed: {}", resp.text)
         else:
-            log.info("Sent approval request for '%s' to Telegram", pkg.article_title)
+            log.info("Sent approval request for '{}' to Telegram", pkg.article_title)

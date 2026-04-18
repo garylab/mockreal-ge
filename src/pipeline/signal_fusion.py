@@ -73,5 +73,5 @@ async def fuse(signals: list[dict]) -> list[dict]:
             "viral_score": 6,
             "seo_potential": 7,
         })
-    log.info("Fused %d hybrid topics from %d signals", len(results), len(signals))
+    log.info("Fused {} hybrid topics from {} signals", len(results), len(signals))
     return results

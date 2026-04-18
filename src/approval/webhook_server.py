@@ -40,14 +40,14 @@ async def telegram_callback(request: Request):
 
     if action == "approve":
         await db.update_content_status(content_id, "approved")
-        log.info("Content %s APPROVED", content_id)
+        log.info("Content {} APPROVED", content_id)
         if _publish_callback:
             row = await db.get_pending_approval(content_id)
             if row:
                 await _publish_callback(content_id)
     elif action == "reject":
         await db.update_content_status(content_id, "rejected")
-        log.info("Content %s REJECTED", content_id)
+        log.info("Content {} REJECTED", content_id)
 
     return {"ok": True}
 
@@ -70,5 +70,5 @@ async def tracking_event(request: Request):
         ctr=body.get("ctr", 0),
         conversion_rate=body.get("conversion_rate", 0),
     )
-    log.info("Tracking event: %s / %s", content_id, platform)
+    log.info("Tracking event: {} / {}", content_id, platform)
     return {"ok": True}

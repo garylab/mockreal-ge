@@ -36,5 +36,5 @@ def upload_image(image_bytes: bytes, filename: str, content_type: str = "image/j
         ContentType=content_type,
     )
     public_url = f"{settings.r2_public_url}/{key}"
-    log.info("Uploaded %s -> %s", key, public_url)
+    log.info("Uploaded {} -> {}", key, public_url)
     return public_url

@@ -30,8 +30,8 @@ async def generate_featured(pkg: ContentPackage) -> ContentPackage:
         filename = f"featured-{pkg.content_id}.png"
         public_url = upload_image(img_bytes, filename, content_type="image/png")
         pkg.featured_image_url = public_url
-        log.info("Featured image for '%s': %s", pkg.article_title, public_url)
+        log.info("Featured image for '{}': {}", pkg.article_title, public_url)
     except Exception as exc:
-        log.warning("Featured image generation failed: %s", exc)
+        log.warning("Featured image generation failed: {}", exc)
 
     return pkg

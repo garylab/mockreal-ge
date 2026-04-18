@@ -16,7 +16,7 @@ async def fetch_autocomplete() -> list[RawSignal]:
     batches = await asyncio.gather(*tasks, return_exceptions=True)
     for batch in batches:
         if isinstance(batch, Exception):
-            log.warning("Autocomplete error: %s", batch)
+            log.warning("Autocomplete error: {}", batch)
             continue
         for i, sug in enumerate(batch.get("suggestions", [])[:8]):
             results.append(RawSignal(
@@ -24,5 +24,5 @@ async def fetch_autocomplete() -> list[RawSignal]:
                 source="google_autocomplete",
                 engagement=8 - i,
             ))
-    log.info("Autocomplete: fetched %d suggestions", len(results))
+    log.info("Autocomplete: fetched {} suggestions", len(results))
     return results

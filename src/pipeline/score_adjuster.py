@@ -32,5 +32,5 @@ def adjust(
         t.decision = "WRITE" if t.score >= 7 else "IGNORE"
 
     adjusted = sum(1 for t in topics if t.score_adjustment != 0)
-    log.info("Adjusted %d/%d topics based on cluster performance", adjusted, len(topics))
+    log.info("Adjusted {}/{} topics based on cluster performance", adjusted, len(topics))
     return topics

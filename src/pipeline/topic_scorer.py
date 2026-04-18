@@ -89,7 +89,7 @@ async def score(
             parent_title=orig.get("parent_title"),
         ))
 
-    log.info("Scored %d topics: %d WRITE, %d IGNORE",
+    log.info("Scored {} topics: {} WRITE, {} IGNORE",
              len(results),
              sum(1 for t in results if t.decision == "WRITE"),
              sum(1 for t in results if t.decision == "IGNORE"))

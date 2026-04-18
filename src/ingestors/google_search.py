@@ -18,5 +18,5 @@ async def fetch_search() -> list[RawSignal]:
             snippet=item.get("snippet", "")[:300],
             engagement=11 - item.get("position", 10),
         ))
-    log.info("Search: fetched %d results", len(results))
+    log.info("Search: fetched {} results", len(results))
     return results

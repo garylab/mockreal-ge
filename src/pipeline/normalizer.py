@@ -22,5 +22,5 @@ def normalize_all(signal_batches: list[list[RawSignal]]) -> list[RawSignal]:
             unique.append(sig)
 
     unique.sort(key=lambda s: s.engagement, reverse=True)
-    log.info("Normalized %d raw signals -> %d unique", len(all_signals), len(unique))
+    log.info("Normalized {} raw signals -> {} unique", len(all_signals), len(unique))
     return unique

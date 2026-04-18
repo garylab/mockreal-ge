@@ -33,6 +33,6 @@ async def export_dashboard() -> None:
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(settings.dashboard_webhook_url, json=payload)
             resp.raise_for_status()
-        log.info("Exported dashboard data (%d clusters)", len(payload["clusters"]))
+        log.info("Exported dashboard data ({} clusters)", len(payload["clusters"]))
     except Exception as exc:
-        log.warning("Dashboard export failed: %s", exc)
+        log.warning("Dashboard export failed: {}", exc)

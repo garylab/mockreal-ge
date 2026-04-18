@@ -72,11 +72,11 @@ async def _register_telegram_webhook() -> None:
             })
             data = resp.json()
             if data.get("ok"):
-                log.info("Telegram webhook registered: %s", webhook_url)
+                log.info("Telegram webhook registered: {}", webhook_url)
             else:
-                log.warning("Telegram webhook registration: %s", data.get("description", "unknown error"))
+                log.warning("Telegram webhook registration: {}", data.get("description", "unknown error"))
     except Exception as exc:
-        log.warning("Failed to register Telegram webhook: %s (set publicly accessible URL in production)", exc)
+        log.warning("Failed to register Telegram webhook: {} (set publicly accessible URL in production)", exc)
 
 
 # ── Lifecycle ────────────────────────────────────────────────
@@ -113,7 +113,7 @@ async def startup():
 
     scheduler.start()
     log.info(
-        "Scheduler started: pipeline every %dh, metrics at %d:00 (%s)",
+        "Scheduler started: pipeline every {}h, metrics at {}:00 ({})",
         settings.pipeline_interval_hours,
         settings.metrics_hour,
         settings.generic_timezone,

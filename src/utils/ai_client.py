@@ -45,7 +45,7 @@ async def chat_gpt(
         )
         if response_format:
             kwargs["response_format"] = response_format
-        log.debug("GPT call: %s, %d messages", model, len(messages))
+        log.debug("GPT call: {}, {} messages", model, len(messages))
         resp = await get_openai().chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
@@ -59,7 +59,7 @@ async def chat_claude(
     temperature: float = 0.6,
 ) -> str:
     async with ai_semaphore:
-        log.debug("Claude call: %s, %d chars", model, len(user_message))
+        log.debug("Claude call: {}, {} chars", model, len(user_message))
         resp = await get_anthropic().messages.create(
             model=model,
             max_tokens=max_tokens,
@@ -73,7 +73,7 @@ async def chat_claude(
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=2, max=15))
 async def generate_image_dalle(prompt: str, size: str = "1792x1024") -> str:
     async with ai_semaphore:
-        log.debug("DALL-E call: %s...", prompt[:60])
+        log.debug("DALL-E call: {}...", prompt[:60])
         resp = await get_openai().images.generate(
             model="dall-e-3",
             prompt=prompt,

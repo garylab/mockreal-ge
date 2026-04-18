@@ -73,5 +73,5 @@ async def expand(top_performers: list[dict]) -> list[dict]:
             },
         })
 
-    log.info("Expanded %d derivative topics from %d performers", len(results), len(top_performers))
+    log.info("Expanded {} derivative topics from {} performers", len(results), len(top_performers))
     return results

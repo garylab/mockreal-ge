@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from src.approval.telegram_bot import send_for_approval
+from src.config import settings
 from src.content.featured_image import generate_featured
 from src.content.generator import generate
 from src.content.humanizer import humanize
@@ -38,14 +39,14 @@ async def main_pipeline() -> None:
 
     try:
         # 1. Parallel data ingestion
-        log.info("[1/8] Fetching signals from %d sources...", len(ALL_INGESTORS))
+        log.info("[1/8] Fetching signals from {} sources...", len(ALL_INGESTORS))
         raw_batches = await asyncio.gather(
             *[fn() for fn in ALL_INGESTORS],
             return_exceptions=True,
         )
         for i, batch in enumerate(raw_batches):
             if isinstance(batch, Exception):
-                log.warning("Ingestor %d failed: %s", i, batch)
+                log.warning("Ingestor {} failed: {}", i, batch)
         signal_batches = [b for b in raw_batches if isinstance(b, list)]
 
         # 2. Normalize + deduplicate
@@ -65,10 +66,10 @@ async def main_pipeline() -> None:
         performers = await fetch_top_performers()
         derived_topics = await expand(performers)
         all_topics = fused_topics + derived_topics
-        log.info("Total topics: %d fused + %d derived = %d", len(fused_topics), len(derived_topics), len(all_topics))
+        log.info("Total topics: {} fused + {} derived = {}", len(fused_topics), len(derived_topics), len(all_topics))
 
         # 6. AI scoring + cluster adjustment
-        log.info("[6/8] Scoring %d topics...", len(all_topics))
+        log.info("[6/8] Scoring {} topics...", len(all_topics))
         cluster_feedback = await db.fetch_cluster_feedback()
         feedback_dicts = [dict(r) for r in cluster_feedback]
         scored_topics = await score(all_topics, feedback_dicts)
@@ -86,10 +87,10 @@ async def main_pipeline() -> None:
         log.info("[7/8] Filtering...")
         existing_titles = await db.fetch_recent_titles(days=30)
         writable = filter_and_prioritize(scored_topics, existing_titles)
-        log.info("%d topics to write (after DB dedup + blacklist)", len(writable))
+        log.info("{} topics to write (after DB dedup + blacklist)", len(writable))
 
         # 8. Generate content for each topic
-        log.info("[8/8] Generating content for %d topics...", min(len(writable), 8))
+        log.info("[8/8] Generating content for {} topics...", min(len(writable), 8))
         success_count = 0
         for topic in writable[:8]:
             try:
@@ -115,27 +116,33 @@ async def main_pipeline() -> None:
                     priority=topic.priority.value,
                 )
 
-                await send_for_approval(pkg)
+                if settings.auto_approve:
+                    await db.update_content_status(pkg.content_id, "approved")
+                    log.info("✓ Auto-approved: '{}' (score={:.1f}, cluster={})",
+                             pkg.article_title, topic.score, topic.cluster)
+                    await publish_approved(pkg.content_id)
+                else:
+                    await send_for_approval(pkg)
+                    log.info("✓ Queued for approval: '{}' (score={:.1f}, cluster={})",
+                             pkg.article_title, topic.score, topic.cluster)
                 success_count += 1
-                log.info("✓ Queued for approval: '%s' (score=%.1f, cluster=%s)",
-                         pkg.article_title, topic.score, topic.cluster)
             except Exception as exc:
-                log.error("✗ Failed topic '%s': %s", topic.title, exc, exc_info=True)
+                log.error("✗ Failed topic '{}': {}", topic.title, exc, exc_info=True)
 
-        log.info("========== Pipeline complete: %d/%d articles generated ==========",
+        log.info("========== Pipeline complete: {}/{} articles generated ==========",
                  success_count, min(len(writable), 8))
     except Exception as exc:
-        log.error("Pipeline failed: %s", exc, exc_info=True)
+        log.error("Pipeline failed: {}", exc, exc_info=True)
 
 
 async def publish_approved(content_id: str) -> None:
     """Called when content is approved via Telegram — publish to all platforms."""
-    log.info("Publishing approved content: %s", content_id)
+    log.info("Publishing approved content: {}", content_id)
     row = await db.fetchrow(
-        "SELECT * FROM mockreal.content WHERE content_id = $1", content_id,
+        "SELECT * FROM content WHERE content_id = $1", content_id,
     )
     if not row:
-        log.warning("Content %s not found", content_id)
+        log.warning("Content {} not found", content_id)
         return
 
     import json
@@ -169,7 +176,7 @@ async def publish_approved(content_id: str) -> None:
     )
 
     cta_variant = await get_preferred_variant()
-    log.info("Using CTA variant '%s' (A/B winner)", cta_variant)
+    log.info("Using CTA variant '{}' (A/B winner)", cta_variant)
 
     results: list[PublishResult | Exception] = await asyncio.gather(
         *[p.publish(pkg, cta_variant) for p in PUBLISHERS],
@@ -179,16 +186,16 @@ async def publish_approved(content_id: str) -> None:
     published = 0
     for r in results:
         if isinstance(r, Exception):
-            log.error("Publish error: %s", r)
+            log.error("Publish error: {}", r)
             continue
         if r.success:
             await db.insert_publish_log(content_id, r.platform, r.url, cta_variant)
             published += 1
         else:
-            log.warning("Publish failed on %s: %s", r.platform, r.error)
+            log.warning("Publish failed on {}: {}", r.platform, r.error)
 
     await db.update_content_status(content_id, "published")
-    log.info("Published %s to %d/%d platforms", content_id, published, len(PUBLISHERS))
+    log.info("Published {} to {}/{} platforms", content_id, published, len(PUBLISHERS))
 
 
 async def daily_metrics() -> None:
@@ -196,16 +203,16 @@ async def daily_metrics() -> None:
     log.info("========== Starting daily metrics ==========")
     try:
         metrics = await collect_and_compute(days=7)
-        log.info("Computed metrics for %d content-platform pairs", len(metrics))
+        log.info("Computed metrics for {} content-platform pairs", len(metrics))
 
         ab_result = await analyze_ab_results()
-        log.info("A/B analysis: winner=%s, confidence=%s", ab_result["winner"], ab_result["confidence"])
+        log.info("A/B analysis: winner={}, confidence={}", ab_result["winner"], ab_result["confidence"])
 
         regen_count = await iterate_low_ctr(ctr_threshold=1.0, limit=5)
-        log.info("Regenerated %d low-CTR articles", regen_count)
+        log.info("Regenerated {} low-CTR articles", regen_count)
 
         await export_dashboard()
 
         log.info("========== Daily metrics complete ==========")
     except Exception as exc:
-        log.error("Daily metrics failed: %s", exc, exc_info=True)
+        log.error("Daily metrics failed: {}", exc, exc_info=True)

@@ -16,7 +16,7 @@ async def fetch_trends() -> list[RawSignal]:
     batches = await asyncio.gather(*tasks, return_exceptions=True)
     for q, batch in zip(QUERIES, batches):
         if isinstance(batch, Exception):
-            log.warning("Trends error for '%s': %s", q, batch)
+            log.warning("Trends error for '{}': {}", q, batch)
             continue
         for story in batch.get("interest_over_time", {}).get("timeline_data", [])[-5:]:
             for val in story.get("values", []):
@@ -34,5 +34,5 @@ async def fetch_trends() -> list[RawSignal]:
                     source="google_trends",
                     engagement=int(item.get("extracted_value", 0)),
                 ))
-    log.info("Trends: fetched %d signals", len(results))
+    log.info("Trends: fetched {} signals", len(results))
     return results

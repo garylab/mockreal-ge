@@ -44,5 +44,5 @@ async def collect_and_compute(days: int = 7) -> list[dict]:
             conversion_rate=m["conversion_rate"],
         )
 
-    log.info("Computed metrics for %d content-platform pairs", len(results))
+    log.info("Computed metrics for {} content-platform pairs", len(results))
     return results

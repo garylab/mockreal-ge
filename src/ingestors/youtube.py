@@ -22,5 +22,5 @@ async def fetch_youtube() -> list[RawSignal]:
             snippet=item.get("description", "")[:300],
             extra={"channel": item.get("channel", {}).get("name", "")},
         ))
-    log.info("YouTube: fetched %d videos", len(results))
+    log.info("YouTube: fetched {} videos", len(results))
     return results

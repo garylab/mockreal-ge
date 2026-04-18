@@ -19,5 +19,5 @@ async def fetch_news() -> list[RawSignal]:
             engagement=10,
             extra={"source_name": item.get("source", {}).get("name", "")},
         ))
-    log.info("News: fetched %d articles", len(results))
+    log.info("News: fetched {} articles", len(results))
     return results

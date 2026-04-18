@@ -69,7 +69,7 @@ async def insert_draft(
 ) -> None:
     await execute(
         """
-        INSERT INTO mockreal.content
+        INSERT INTO content
             (content_id, title, cluster, score, article_html, medium_article,
              seo_keywords, meta_description, social_posts,
              cta_variant_a, cta_variant_b, outline, suggested_angle, priority, status)
@@ -85,7 +85,7 @@ async def insert_draft(
 async def update_content_status(content_id: str, status: str) -> None:
     extra = ", approved_at = NOW()" if status == "approved" else ""
     await execute(
-        f"UPDATE mockreal.content SET status = $1{extra} WHERE content_id = $2",
+        f"UPDATE content SET status = $1{extra} WHERE content_id = $2",
         status, content_id,
     )
 
@@ -95,7 +95,7 @@ async def insert_publish_log(
 ) -> None:
     await execute(
         """
-        INSERT INTO mockreal.publish_logs (content_id, platform, url, cta_variant)
+        INSERT INTO publish_logs (content_id, platform, published_url, cta_variant)
         VALUES ($1, $2, $3, $4)
         """,
         content_id, platform, url, cta_variant,
@@ -109,10 +109,10 @@ async def upsert_performance(
 ) -> None:
     await execute(
         """
-        INSERT INTO mockreal.performance
+        INSERT INTO performance
             (content_id, platform, impressions, clicks, signups, ctr, conversion_rate)
         VALUES ($1,$2,$3,$4,$5,$6,$7)
-        ON CONFLICT (content_id, platform) DO UPDATE SET
+        ON CONFLICT ON CONSTRAINT uq_perf_content_platform_period DO UPDATE SET
             impressions = EXCLUDED.impressions,
             clicks = EXCLUDED.clicks,
             signups = EXCLUDED.signups,
@@ -132,9 +132,9 @@ async def fetch_cluster_feedback() -> list[asyncpg.Record]:
         SELECT c.cluster, COUNT(*) AS total_posts,
                COALESCE(AVG(p.ctr),0) AS avg_ctr,
                COALESCE(AVG(p.conversion_rate),0) AS avg_conversion
-        FROM mockreal.content c
-        LEFT JOIN mockreal.performance p ON c.content_id = p.content_id
-        WHERE c.status = 'approved' AND c.created_at > NOW() - INTERVAL '30 days'
+        FROM content c
+        LEFT JOIN performance p ON c.content_id = p.content_id
+        WHERE c.status IN ('approved','published') AND c.created_at > NOW() - INTERVAL '30 days'
         GROUP BY c.cluster
         """
     )
@@ -150,9 +150,9 @@ async def fetch_top_performers(limit: int = 10) -> list[asyncpg.Record]:
                SUM(p.clicks) AS total_clicks,
                SUM(p.signups) AS total_signups,
                COUNT(DISTINCT pl.platform) AS platforms_published
-        FROM mockreal.content c
-        JOIN mockreal.performance p ON c.content_id = p.content_id
-        JOIN mockreal.publish_logs pl ON c.content_id = pl.content_id
+        FROM content c
+        JOIN performance p ON c.content_id = p.content_id
+        JOIN publish_logs pl ON c.content_id = pl.content_id
         WHERE c.status IN ('approved','published')
           AND (p.ctr > 1.5 OR p.conversion_rate > 1.0)
           AND c.created_at > NOW() - INTERVAL '60 days'
@@ -173,11 +173,11 @@ async def fetch_recent_publishes(days: int = 7) -> list[asyncpg.Record]:
                COALESCE(p.conversion_rate,0) AS conversion_rate,
                COALESCE(p.clicks,0) AS clicks,
                COALESCE(p.signups,0) AS signups
-        FROM mockreal.publish_logs pl
-        JOIN mockreal.content c ON pl.content_id = c.content_id
-        LEFT JOIN mockreal.performance p
+        FROM publish_logs pl
+        JOIN content c ON pl.content_id = c.content_id
+        LEFT JOIN performance p
             ON pl.content_id = p.content_id AND pl.platform = p.platform
-        WHERE pl.published_at > NOW() - INTERVAL '%s days'
+        WHERE pl.published_at > NOW() - $1 * INTERVAL '1 day'
         ORDER BY pl.published_at DESC
         """,
         days,
@@ -190,8 +190,8 @@ async def fetch_low_ctr_content(threshold: float = 1.0, limit: int = 5) -> list[
         SELECT c.content_id, c.title, c.cluster, c.article_html,
                c.cta_variant_a, c.cta_variant_b,
                AVG(p.ctr) AS avg_ctr
-        FROM mockreal.content c
-        JOIN mockreal.performance p ON c.content_id = p.content_id
+        FROM content c
+        JOIN performance p ON c.content_id = p.content_id
         WHERE c.status = 'approved' AND p.ctr < $1
           AND c.created_at > NOW() - INTERVAL '30 days'
         GROUP BY c.content_id, c.title, c.cluster, c.article_html,
@@ -206,7 +206,7 @@ async def fetch_low_ctr_content(threshold: float = 1.0, limit: int = 5) -> list[
 async def update_regenerated(content_id: str, article_html: str, social_posts: dict) -> None:
     await execute(
         """
-        UPDATE mockreal.content
+        UPDATE content
         SET article_html = $2, social_posts = $3, updated_at = NOW()
         WHERE content_id = $1
         """,
@@ -216,7 +216,7 @@ async def update_regenerated(content_id: str, article_html: str, social_posts: d
 
 async def get_pending_approval(content_id: str) -> asyncpg.Record | None:
     return await fetchrow(
-        "SELECT * FROM mockreal.content WHERE content_id = $1 AND status = 'draft'",
+        "SELECT * FROM content WHERE content_id = $1 AND status = 'draft'",
         content_id,
     )
 
@@ -225,9 +225,9 @@ async def title_exists(title: str, days: int = 30) -> bool:
     """Check if a similar title was already generated recently."""
     row = await fetchrow(
         """
-        SELECT 1 FROM mockreal.content
+        SELECT 1 FROM content
         WHERE LOWER(title) = LOWER($1)
-          AND created_at > NOW() - INTERVAL '%s days'
+          AND created_at > NOW() - $2 * INTERVAL '1 day'
         LIMIT 1
         """,
         title, days,
@@ -237,7 +237,7 @@ async def title_exists(title: str, days: int = 30) -> bool:
 
 async def fetch_recent_titles(days: int = 30) -> set[str]:
     rows = await fetch(
-        "SELECT LOWER(title) AS t FROM mockreal.content WHERE created_at > NOW() - INTERVAL '%s days'",
+        "SELECT LOWER(title) AS t FROM content WHERE created_at > NOW() - $1 * INTERVAL '1 day'",
         days,
     )
     return {r["t"] for r in rows}
@@ -253,8 +253,8 @@ async def fetch_ab_results() -> list[asyncpg.Record]:
                COALESCE(AVG(p.conversion_rate), 0) AS avg_conv,
                COALESCE(SUM(p.clicks), 0) AS total_clicks,
                COALESCE(SUM(p.signups), 0) AS total_signups
-        FROM mockreal.publish_logs pl
-        LEFT JOIN mockreal.performance p
+        FROM publish_logs pl
+        LEFT JOIN performance p
             ON pl.content_id = p.content_id AND pl.platform = p.platform
         WHERE pl.published_at > NOW() - INTERVAL '30 days'
         GROUP BY pl.cta_variant

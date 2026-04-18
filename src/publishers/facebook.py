@@ -35,5 +35,5 @@ class FacebookPublisher(BasePublisher):
             data = resp.json()
 
         post_id = data.get("id", "")
-        log.info("Published to Facebook: %s", post_id)
+        log.info("Published to Facebook: {}", post_id)
         return PublishResult(self.platform, post_id, True)

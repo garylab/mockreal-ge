@@ -18,5 +18,5 @@ async def fetch_paa() -> list[RawSignal]:
             snippet=item.get("snippet", "")[:300],
             engagement=8 - i,
         ))
-    log.info("PAA: fetched %d questions", len(results))
+    log.info("PAA: fetched {} questions", len(results))
     return results

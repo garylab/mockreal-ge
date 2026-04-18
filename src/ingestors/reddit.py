@@ -29,7 +29,7 @@ async def fetch_reddit() -> list[RawSignal]:
     batches = await asyncio.gather(*tasks, return_exceptions=True)
     for batch in batches:
         if isinstance(batch, Exception):
-            log.warning("Reddit fetch error: %s", batch)
+            log.warning("Reddit fetch error: {}", batch)
             continue
         for post in batch:
             results.append(RawSignal(
@@ -40,5 +40,5 @@ async def fetch_reddit() -> list[RawSignal]:
                 snippet=post.get("selftext", "")[:300],
                 extra={"subreddit": post.get("subreddit", ""), "num_comments": post.get("num_comments", 0)},
             ))
-    log.info("Reddit: fetched %d posts", len(results))
+    log.info("Reddit: fetched {} posts", len(results))
     return results

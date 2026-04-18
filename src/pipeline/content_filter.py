@@ -25,10 +25,10 @@ def filter_and_prioritize(
         if t.decision != "WRITE" or t.is_duplicate:
             continue
         if _is_blacklisted(t.title, blacklist):
-            log.info("Blacklisted: '%s'", t.title)
+            log.info("Blacklisted: '{}'", t.title)
             continue
         if t.title.lower() in existing:
-            log.info("Already exists in DB: '%s'", t.title)
+            log.info("Already exists in DB: '{}'", t.title)
             continue
         writable.append(t)
 
@@ -46,7 +46,7 @@ def filter_and_prioritize(
     ))
 
     log.info(
-        "Filtered: %d writable topics (high=%d, medium=%d, low=%d) from %d total",
+        "Filtered: {} writable topics (high={}, medium={}, low={}) from {} total",
         len(writable),
         sum(1 for t in writable if t.priority == Priority.high),
         sum(1 for t in writable if t.priority == Priority.medium),
