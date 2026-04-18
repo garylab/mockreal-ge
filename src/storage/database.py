@@ -51,6 +51,35 @@ async def fetchval(query: str, *args: Any) -> Any:
 
 # ── Signals / Topics ──────────────────────────────────────────
 
+async def fetch_recent_signals(days: int = 7, exclude_batch: str = "") -> list[dict]:
+    """Fetch raw signals from past runs within the last N days."""
+    rows = await fetch(
+        """
+        SELECT source, title, url, engagement, viral_score, subreddit,
+               batch_id::text, fetched_at,
+               COUNT(*) OVER (PARTITION BY LOWER(title)) AS occurrence_count
+        FROM topics
+        WHERE fetched_at > NOW() - $1 * INTERVAL '1 day'
+          AND source != 'fused'
+          AND ($2 = '' OR batch_id::text != $2)
+        ORDER BY fetched_at DESC
+        """,
+        days, exclude_batch,
+    )
+    results = []
+    for r in rows:
+        results.append({
+            "source": r["source"],
+            "title": r["title"],
+            "url": r["url"] or "",
+            "engagement": int(r["engagement"]),
+            "viral_score": float(r["viral_score"]),
+            "subreddit": r["subreddit"],
+            "occurrence_count": int(r["occurrence_count"]),
+        })
+    return results
+
+
 async def insert_signals(signals: list[dict], batch_id: str) -> int:
     """Bulk-insert raw/scored signals into the topics table. Returns count inserted."""
     pool = await get_pool()

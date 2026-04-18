@@ -19,6 +19,7 @@ from src.pipeline.content_filter import filter_and_prioritize
 from src.pipeline.normalizer import normalize_all
 from src.pipeline.score_adjuster import adjust
 from src.pipeline.signal_fusion import fuse
+from src.pipeline.signal_memory import merge_with_history
 from src.pipeline.topic_expander import expand
 from src.pipeline.topic_scorer import score
 from src.pipeline.viral_scorer import score as viral_score
@@ -63,9 +64,13 @@ async def main_pipeline() -> None:
         saved = await db.insert_signals(scored_signals, batch_id)
         log.info("Saved {} signals to DB (batch={})", saved, batch_id[:8])
 
+        # Merge with historical signals from past runs
+        historical = await db.fetch_recent_signals(days=7, exclude_batch=batch_id)
+        merged_signals = merge_with_history(scored_signals, historical)
+
         # 4. Signal fusion (GPT-4o)
         log.info("[4/8] Fusing signals into hybrid topics...")
-        fused_topics = await fuse(scored_signals)
+        fused_topics = await fuse(merged_signals)
 
         # 5. Content flywheel — derive from top performers
         log.info("[5/8] Expanding from top performers...")
