@@ -9,6 +9,7 @@ from src.content.featured_image import generate_featured
 from src.content.generator import generate
 from src.content.humanizer import humanize
 from src.content.image_enricher import enrich
+from src.content.wechat_converter import convert_to_wechat
 from src.feedback.ab_analyzer import analyze_ab_results, get_preferred_variant
 from src.feedback.content_iterator import iterate_low_ctr
 from src.feedback.dashboard_export import export_dashboard
@@ -27,13 +28,14 @@ from src.publishers.base import PublishResult
 from src.publishers.facebook import FacebookPublisher
 from src.publishers.linkedin import LinkedInPublisher
 from src.publishers.medium import MediumPublisher
+from src.publishers.wechat import WechatPublisher
 from src.publishers.website import WebsitePublisher
 from src.storage import database as db
 from src.utils.ai_client import embed_text, embed_texts
 from loguru import logger as log
 
 
-PUBLISHERS = [WebsitePublisher(), MediumPublisher(), LinkedInPublisher(), FacebookPublisher()]
+PUBLISHERS = [WebsitePublisher(), MediumPublisher(), LinkedInPublisher(), FacebookPublisher(), WechatPublisher()]
 
 
 async def main_pipeline() -> None:
@@ -122,7 +124,7 @@ async def main_pipeline() -> None:
 
         # 7. Filter, vector-deduplicate against DB + intra-batch, apply blacklist
         log.info("[7/8] Filtering...")
-        writable = await filter_and_prioritize(scored_topics, recent_titles, topic_emb_map)
+        writable = await filter_and_prioritize(scored_topics, recent_titles, topic_emb_map, batch_id=batch_id)
         log.info("{} topics to write (after DB dedup + vector dedup + blacklist)", len(writable))
 
         # 8. Generate content for each topic
@@ -145,6 +147,7 @@ async def main_pipeline() -> None:
                 pkg = await humanize(pkg)
                 pkg = await enrich(pkg)
                 pkg = await generate_featured(pkg)
+                pkg = await convert_to_wechat(pkg)
 
                 # Embed the final article title (may differ from topic title after generation)
                 final_emb = await embed_text(pkg.article_title)
@@ -156,6 +159,7 @@ async def main_pipeline() -> None:
                     score=topic.score,
                     article_html=pkg.article_html,
                     medium_article=pkg.medium_article,
+                    wechat_article=pkg.wechat_article,
                     seo_keywords=pkg.seo_keywords,
                     meta_description=pkg.meta_description,
                     social_posts=pkg.social_posts,
@@ -192,9 +196,7 @@ async def main_pipeline() -> None:
 async def publish_approved(content_id: str) -> None:
     """Called when content is approved via Telegram — publish to all platforms."""
     log.info("Publishing approved content: {}", content_id)
-    row = await db.fetchrow(
-        "SELECT * FROM content WHERE content_id = $1", content_id,
-    )
+    row = await db.fetch_content(content_id)
     if not row:
         log.warning("Content {} not found", content_id)
         return
@@ -228,6 +230,7 @@ async def publish_approved(content_id: str) -> None:
         article_title=row["title"],
         article_html=row.get("article_html", ""),
         medium_article=row.get("medium_article", ""),
+        wechat_article=row.get("wechat_article", ""),
         social_posts=social if isinstance(social, dict) else {},
         social_posts_variant_b=social_b if isinstance(social_b, dict) else {},
         seo_keywords=keywords if isinstance(keywords, list) else [],

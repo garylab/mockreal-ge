@@ -26,6 +26,7 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
 async def _vector_dedup_cross_run(
     topics: list[ScoredTopic],
     embeddings: dict[str, list[float]],
+    exclude_batch: str = "",
 ) -> list[ScoredTopic]:
     """Drop topics that are too similar to previously published fused topics in DB."""
     kept: list[ScoredTopic] = []
@@ -34,7 +35,9 @@ async def _vector_dedup_cross_run(
         if emb is None:
             kept.append(t)
             continue
-        similar = await db.find_similar_fused(emb, threshold=VECTOR_DEDUP_THRESHOLD, days=30)
+        similar = await db.find_similar_fused(
+            emb, threshold=VECTOR_DEDUP_THRESHOLD, days=30, exclude_batch=exclude_batch,
+        )
         if similar:
             best = similar[0]
             log.info("Vector cross-run dedup dropped '{}' (similar to '{}', sim={:.3f})",
@@ -73,6 +76,7 @@ async def filter_and_prioritize(
     topics: list[ScoredTopic],
     existing_titles: set[str] | None = None,
     embeddings: dict[str, list[float]] | None = None,
+    batch_id: str = "",
 ) -> list[ScoredTopic]:
     """Filter WRITE topics, remove duplicates/blacklisted, assign priority."""
     blacklist = get_blacklist()
@@ -107,7 +111,7 @@ async def filter_and_prioritize(
     pre_dedup = len(writable)
     if emb_map:
         writable = _vector_dedup_intra_batch(writable, emb_map)
-        writable = await _vector_dedup_cross_run(writable, emb_map)
+        writable = await _vector_dedup_cross_run(writable, emb_map, exclude_batch=batch_id)
     post_dedup = len(writable)
 
     log.info(

@@ -24,7 +24,7 @@ END $$;
 
 DO $$ BEGIN
   CREATE TYPE platform_type AS ENUM (
-    'website', 'twitter', 'linkedin', 'medium', 'facebook'
+    'website', 'twitter', 'linkedin', 'medium', 'facebook', 'wechat'
   );
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
@@ -123,6 +123,7 @@ CREATE TABLE IF NOT EXISTS content (
   title_embedding       vector(1536),
   article_html          TEXT,
   medium_article        TEXT,
+  wechat_article        TEXT,
   outline               JSONB                    NOT NULL DEFAULT '[]'::jsonb,
   social_posts          JSONB                    NOT NULL DEFAULT '{}'::jsonb,
   social_posts_variant_b JSONB                   NOT NULL DEFAULT '{}'::jsonb,

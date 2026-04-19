@@ -12,7 +12,7 @@ from fastapi import FastAPI, Header, HTTPException, Request
 from src.approval.webhook_server import router as webhook_router, set_publish_callback
 from src.config import settings
 from src.scheduler.jobs import daily_metrics, main_pipeline, publish_approved
-from src.storage.database import close_pool, get_pool, ping
+from src.storage.database import close_db, init_db, ping
 from src.utils.logging import setup_logging
 from loguru import logger as log
 
@@ -86,8 +86,8 @@ async def startup():
     setup_logging("INFO")
     log.info("Starting Mockreal Growth Engine...")
 
-    await get_pool()
-    log.info("Database pool connected")
+    await init_db()
+    log.info("Database connected")
 
     set_publish_callback(publish_approved)
 
@@ -122,7 +122,7 @@ async def startup():
 
 @app.on_event("shutdown")
 async def shutdown():
-    await close_pool()
+    await close_db()
     log.info("Shutdown complete")
 
 
