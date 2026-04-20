@@ -19,10 +19,14 @@ async def humanize(pkg: ContentPackage) -> ContentPackage:
     })
 
     raw = await chat_claude(
-        user_message=f"Humanize this content package. Return ONLY valid JSON, no markdown fences:\n\n{payload}",
+        user_message=(
+            "Rewrite this content to kill all AI patterns. Be aggressive — "
+            "if something sounds like an AI wrote it, change it. "
+            "Return ONLY valid JSON, no markdown fences:\n\n" + payload
+        ),
         system=HUMANIZE_SYSTEM,
         max_tokens=10000,
-        temperature=0.7,
+        temperature=0.8,
     )
 
     cleaned = raw.strip()
