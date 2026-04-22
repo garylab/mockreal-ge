@@ -30,7 +30,7 @@ async def google_trends(query: str) -> dict:
 
 
 async def google_news(query: str) -> dict:
-    return await search("google_news", {"q": query, "gl": "us", "hl": "en"})
+    return await search("google_news_light", {"q": query, "gl": "us", "hl": "en"})
 
 
 async def google_search(query: str) -> dict:
@@ -46,4 +46,12 @@ async def youtube_search(query: str) -> dict:
 
 
 async def people_also_ask(query: str) -> dict:
-    return await search("google", {"q": query, "gl": "us", "hl": "en"})
+    return await search("google_related_questions", {"q": query, "gl": "us", "hl": "en"})
+
+
+async def google_forums(query: str) -> dict:
+    return await search("google_forums", {"q": query, "gl": "us", "hl": "en"})
+
+
+async def google_scholar(query: str) -> dict:
+    return await search("google_scholar", {"q": query, "hl": "en"})

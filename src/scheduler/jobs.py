@@ -4,26 +4,17 @@ import asyncio
 import uuid
 
 from src.approval.telegram_bot import send_for_approval
-from src.config import settings
+from src.config import get_seed_keywords, settings
 from src.content.featured_image import generate_featured
 from src.content.generator import generate
 from src.content.humanizer import humanize
 from src.content.image_enricher import enrich
+from src.content.researcher import research_topic
 from src.content.wechat_converter import convert_to_wechat
 from src.feedback.ab_analyzer import analyze_ab_results, get_preferred_variant
 from src.feedback.content_iterator import iterate_low_ctr
 from src.feedback.dashboard_export import export_dashboard
 from src.feedback.metrics_collector import collect_and_compute
-from src.ingestors import ALL_INGESTORS
-from src.ingestors.top_performers import fetch_top_performers
-from src.pipeline.content_filter import filter_and_prioritize
-from src.pipeline.normalizer import normalize_all
-from src.pipeline.score_adjuster import adjust
-from src.pipeline.signal_fusion import fuse
-from src.pipeline.signal_memory import merge_with_history
-from src.pipeline.topic_expander import expand
-from src.pipeline.topic_scorer import score
-from src.pipeline.viral_scorer import score as viral_score
 from src.publishers.base import PublishResult
 from src.publishers.facebook import FacebookPublisher
 from src.publishers.linkedin import LinkedInPublisher
@@ -31,7 +22,8 @@ from src.publishers.medium import MediumPublisher
 from src.publishers.wechat import WechatPublisher
 from src.publishers.website import WebsitePublisher
 from src.storage import database as db
-from src.utils.ai_client import embed_text, embed_texts
+from src.storage.models import ScoredTopic
+from src.utils.ai_client import embed_text
 from loguru import logger as log
 
 
@@ -39,124 +31,99 @@ PUBLISHERS = [WebsitePublisher(), MediumPublisher(), LinkedInPublisher(), Facebo
 
 
 async def main_pipeline() -> None:
-    """Main content generation pipeline — runs every N hours."""
-    log.info("========== Starting main pipeline ==========")
+    """Intent-driven content production pipeline.
+
+    1. Pick the highest-priority active cluster
+    2. Pick uncovered intents (pillar first, then supporting)
+    3. Research each intent (Search + News + Scholar)
+    4. Generate, humanize, enrich, publish
+    5. Mark intent as covered
+    """
+    log.info("========== Starting intent-driven pipeline ==========")
 
     try:
-        # 1. Parallel data ingestion
-        log.info("[1/8] Fetching signals from {} sources...", len(ALL_INGESTORS))
-        raw_batches = await asyncio.gather(
-            *[fn() for fn in ALL_INGESTORS],
-            return_exceptions=True,
-        )
-        for i, batch in enumerate(raw_batches):
-            if isinstance(batch, Exception):
-                log.warning("Ingestor {} failed: {}", i, batch)
-        signal_batches = [b for b in raw_batches if isinstance(b, list)]
+        # 1. Find clusters with pending intents
+        active_clusters = await db.fetch_active_clusters()
+        if not active_clusters:
+            log.info("No active clusters with pending intents — run intent mining first")
+            return
 
-        # 2. Normalize + semantic deduplicate (embeds all signal titles)
-        log.info("[2/8] Normalizing signals...")
-        signals, signal_emb_map = await normalize_all(signal_batches)
+        log.info("[1/4] Found {} active clusters with pending intents", len(active_clusters))
 
-        # 3. Viral scoring
-        log.info("[3/8] Scoring virality...")
-        scored_signals = viral_score(signals)
-
-        # Persist raw signals to DB
-        batch_id = str(uuid.uuid4())
-        saved = await db.insert_signals(scored_signals, batch_id)
-        log.info("Saved {} signals to DB (batch={})", saved, batch_id[:8])
-
-        # Merge with historical signals (embedding-based matching)
-        historical = await db.fetch_recent_signals(days=7, exclude_batch=batch_id)
-        merged_signals, signal_emb_map = await merge_with_history(
-            scored_signals, historical, fresh_embeddings=signal_emb_map,
-        )
-
-        # 4. Signal fusion (GPT-4o) — pass recent titles so GPT avoids rehashing
-        log.info("[4/8] Fusing signals into hybrid topics...")
-        recent_titles = await db.fetch_recent_titles(days=30)
-        fused_topics = await fuse(merged_signals, recent_titles=recent_titles)
-
-        # Embed fused topic titles and persist to fused_topics table
-        fused_titles = [t["title"] for t in fused_topics]
-        fused_embeddings = await embed_texts(fused_titles) if fused_titles else []
-        topic_emb_map: dict[str, list[float]] = {}
-        for title, emb in zip(fused_titles, fused_embeddings):
-            topic_emb_map[title.lower()] = emb
-        fused_id_map: dict[str, int] = {}
-        if fused_topics:
-            fused_id_map = await db.insert_fused_topics(fused_topics, fused_embeddings, batch_id)
-            log.info("Saved {} fused topics with embeddings (batch={})", len(fused_id_map), batch_id[:8])
-
-        # 5. Content flywheel — derive from top performers
-        log.info("[5/8] Expanding from top performers...")
-        performers = await fetch_top_performers()
-        derived_topics = await expand(performers)
-        all_topics = fused_topics + derived_topics
-        log.info("Total topics: {} fused + {} derived = {}", len(fused_topics), len(derived_topics), len(all_topics))
-
-        # Embed derived topic titles and merge into embedding map
-        derived_titles = [t["title"] for t in derived_topics if t["title"].lower() not in topic_emb_map]
-        if derived_titles:
-            derived_embs = await embed_texts(derived_titles)
-            for title, emb in zip(derived_titles, derived_embs):
-                topic_emb_map[title.lower()] = emb
-
-        # 6. AI scoring + embedding-based duplicate detection
-        log.info("[6/8] Scoring {} topics...", len(all_topics))
-        cluster_feedback = await db.fetch_cluster_feedback()
-        feedback_dicts = [dict(r) for r in cluster_feedback]
-        scored_topics = await score(all_topics, feedback_dicts, topic_embeddings=topic_emb_map)
-
-        cluster_perf = {}
-        for f in feedback_dicts:
-            if f.get("cluster"):
-                cluster_perf[f["cluster"]] = {
-                    "avg_ctr": float(f.get("avg_ctr", 0)),
-                    "avg_conversion": float(f.get("avg_conversion", 0)),
-                }
-        scored_topics = adjust(scored_topics, cluster_perf)
-
-        # Update fused topics with scoring results
-        updated_fused = await db.update_fused_topic_scores(scored_topics, batch_id)
-        log.info("Updated {} fused topic scores", updated_fused)
-
-        # 7. Filter, vector-deduplicate against DB + intra-batch, apply blacklist
-        log.info("[7/8] Filtering...")
-        writable = await filter_and_prioritize(scored_topics, recent_titles, topic_emb_map, batch_id=batch_id)
-        log.info("{} topics to write (after DB dedup + vector dedup + blacklist)", len(writable))
-
-        # 8. Generate content for each topic
         cap = settings.max_articles_per_run
-        to_write = writable[:cap]
-        log.info("[8/8] Generating content for {} topics (cap={})...", len(to_write), cap)
         success_count = 0
-        for topic in to_write:
+        intents_to_write: list[tuple[dict, dict]] = []  # (intent, cluster)
+
+        # 2. Collect intents across clusters, prioritizing pillar intents
+        for cluster in active_clusters:
+            if len(intents_to_write) >= cap:
+                break
+            pending = await db.fetch_cluster_intents(cluster["id"], status="pending")
+            if not pending:
+                await db.mark_cluster_covered(cluster["id"])
+                log.info("Cluster '{}' fully covered", cluster["name"])
+                continue
+
+            for intent in pending:
+                if len(intents_to_write) >= cap:
+                    break
+                intents_to_write.append((intent, cluster))
+
+        if not intents_to_write:
+            log.info("No pending intents to write — all clusters covered")
+            return
+
+        log.info("[2/4] Selected {} intents to write (cap={})", len(intents_to_write), cap)
+        for intent, cluster in intents_to_write:
+            pillar_tag = " [PILLAR]" if intent.get("is_pillar") else ""
+            log.info("  → '{}' (cluster: {}){}", intent["title"], cluster["name"], pillar_tag)
+
+        # 3. Generate content for each intent
+        log.info("[3/4] Generating content...")
+        for intent, cluster in intents_to_write:
             try:
-                # Final safety check: embedding-based duplicate against content table
-                title_emb = topic_emb_map.get(topic.title.lower())
+                # Duplicate check against existing content
+                title_emb = await embed_text(intent["title"])
                 if title_emb:
                     existing = await db.find_similar_content(title_emb, threshold=0.85, days=60)
                     if existing:
-                        log.warning("Skipping '{}' — too similar to existing article '{}' (sim={:.3f})",
-                                    topic.title, existing["title"], existing["similarity"])
+                        log.warning("Skipping '{}' — too similar to '{}' (sim={:.3f})",
+                                    intent["title"], existing["title"], existing["similarity"])
+                        await db.mark_intent_covered(intent["id"], existing["content_id"])
                         continue
 
-                pkg = await generate(topic)
+                # Research: Google Search + News + Scholar
+                research = await research_topic(intent["title"])
+
+                # Build a ScoredTopic from the intent for the generator
+                source_urls = [s["url"] for s in research.get("sources", []) if s.get("url")]
+                topic = ScoredTopic(
+                    title=intent["title"],
+                    source="intent",
+                    score=float(intent.get("priority_score", 7)),
+                    decision="WRITE",
+                    suggested_angle="",
+                    cluster=cluster["slug"],
+                    source_urls=source_urls,
+                )
+
+                pkg = await generate(topic, research=research)
+                pkg.source_images = research.get("source_images", [])
                 pkg = await humanize(pkg)
                 pkg = await enrich(pkg)
                 pkg = await generate_featured(pkg)
                 pkg = await convert_to_wechat(pkg)
 
-                # Embed the final article title (may differ from topic title after generation)
                 final_emb = await embed_text(pkg.article_title)
+
+                raw_score = float(intent.get("priority_score", 7))
+                content_score = min(raw_score / 125, 10.0)  # normalize to 0-10
 
                 await db.insert_draft(
                     content_id=pkg.content_id,
                     title=pkg.article_title,
-                    cluster=topic.cluster,
-                    score=topic.score,
+                    cluster=cluster["slug"],
+                    score=round(content_score, 1),
                     article_html=pkg.article_html,
                     medium_article=pkg.medium_article,
                     wechat_article=pkg.wechat_article,
@@ -167,28 +134,38 @@ async def main_pipeline() -> None:
                     cta_a=pkg.cta_variant_a,
                     cta_b=pkg.cta_variant_b,
                     outline=pkg.outline,
-                    suggested_angle=topic.suggested_angle,
-                    priority=topic.priority.value,
+                    suggested_angle="",
+                    priority="medium",
                     image_url=pkg.featured_image_url,
                     title_embedding=final_emb,
-                    fused_topic_id=fused_id_map.get(topic.title.lower()),
+                    intent_id=intent["id"],
                 )
+
+                # Mark intent as covered
+                await db.mark_intent_covered(intent["id"], pkg.content_id)
 
                 if settings.auto_approve:
                     await db.update_content_status(pkg.content_id, "approved")
-                    log.info("✓ Auto-approved: '{}' (score={:.1f}, cluster={})",
-                             pkg.article_title, topic.score, topic.cluster)
+                    log.info("✓ Auto-approved: '{}' (intent: '{}', cluster: {})",
+                             pkg.article_title, intent["title"], cluster["name"])
                     await publish_approved(pkg.content_id)
                 else:
                     await send_for_approval(pkg)
-                    log.info("✓ Queued for approval: '{}' (score={:.1f}, cluster={})",
-                             pkg.article_title, topic.score, topic.cluster)
+                    log.info("✓ Queued for approval: '{}' (intent: '{}', cluster: {})",
+                             pkg.article_title, intent["title"], cluster["name"])
                 success_count += 1
-            except Exception as exc:
-                log.error("✗ Failed topic '{}': {}", topic.title, exc, exc_info=True)
 
-        log.info("========== Pipeline complete: {}/{} articles generated ==========",
-                 success_count, len(to_write))
+            except Exception as exc:
+                log.error("✗ Failed intent '{}': {}", intent["title"], exc, exc_info=True)
+
+        # 4. Summary
+        stats = await db.fetch_intent_stats()
+        log.info(
+            "========== Pipeline complete: {}/{} articles generated "
+            "(DB: {} pending, {} covered) ==========",
+            success_count, len(intents_to_write),
+            stats.get("pending", 0), stats.get("covered", 0),
+        )
     except Exception as exc:
         log.error("Pipeline failed: {}", exc, exc_info=True)
 
@@ -263,6 +240,108 @@ async def publish_approved(content_id: str) -> None:
 
     await db.update_content_status(content_id, "published")
     log.info("Published {} to {}/{} platforms", content_id, published, len(PUBLISHERS))
+
+
+async def growth_loop() -> None:
+    """Phase 3: Expand covered clusters with deeper intents.
+
+    For clusters where all intents are covered, mine new deeper intents
+    using the cluster's pillar topic as a seed, then add them to the cluster.
+    """
+    from src.pipeline.intent_miner import mine_intents
+    from src.pipeline.intent_clusterer import process_intents
+
+    log.info("========== Starting growth loop ==========")
+    try:
+        # Find fully covered clusters
+        async with db.get_session() as session:
+            result = await session.execute(
+                db.text("""
+                    SELECT ic.id, ic.name, ic.slug, ic.pillar_intent_id
+                    FROM intent_clusters ic
+                    WHERE ic.status = 'active'
+                      AND ic.covered_count >= ic.intent_count
+                      AND ic.intent_count > 0
+                    ORDER BY ic.priority_score DESC
+                    LIMIT 10
+                """)
+            )
+            covered_clusters = [dict(r) for r in result.mappings().all()]
+
+        if not covered_clusters:
+            log.info("No fully-covered clusters to expand")
+            return
+
+        log.info("Found {} fully-covered clusters to expand", len(covered_clusters))
+
+        for cluster in covered_clusters:
+            # Get the pillar intent title as the seed
+            pillar_id = cluster.get("pillar_intent_id")
+            if not pillar_id:
+                continue
+
+            async with db.get_session() as session:
+                result = await session.execute(
+                    db.text("SELECT title FROM intents WHERE id = :id"),
+                    {"id": pillar_id},
+                )
+                row = result.mappings().first()
+
+            if not row:
+                continue
+
+            seed = row["title"]
+            log.info("Expanding cluster '{}' with seed '{}'", cluster["name"], seed)
+
+            raw_intents = await mine_intents([seed])
+            if raw_intents:
+                batch_id = str(uuid.uuid4())
+                summary = await process_intents(raw_intents, batch_id)
+                log.info("Added {} new intents from expansion of '{}'",
+                         summary.get("intents", 0), cluster["name"])
+
+            # Mark as expanding so it doesn't get re-expanded next run
+            await db.mark_cluster_covered(cluster["id"])
+
+        log.info("========== Growth loop complete ==========")
+    except Exception as exc:
+        log.error("Growth loop failed: {}", exc, exc_info=True)
+
+
+async def intent_mining_pipeline() -> None:
+    """Mine user intents, deduplicate, cluster, and save to DB.
+
+    Runs less frequently than content production (e.g. weekly).
+    """
+    from src.pipeline.intent_miner import mine_intents
+    from src.pipeline.intent_clusterer import process_intents
+
+    log.info("========== Starting intent mining pipeline ==========")
+    try:
+        seeds = get_seed_keywords()
+        if not seeds:
+            log.warning("No seed keywords configured — skipping intent mining")
+            return
+
+        batch_id = str(uuid.uuid4())
+        log.info("Mining intents from {} seeds (batch={})", len(seeds), batch_id[:8])
+
+        raw_intents = await mine_intents(seeds)
+        if not raw_intents:
+            log.warning("No intents mined — check API keys and seed keywords")
+            return
+
+        summary = await process_intents(raw_intents, batch_id)
+        stats = await db.fetch_intent_stats()
+
+        log.info(
+            "========== Intent mining complete: {} raw → {} new intents in {} clusters "
+            "(DB total: {} intents, {} pending, {} covered) ==========",
+            summary["total"], summary["intents"], summary["clusters"],
+            stats.get("total_intents", 0), stats.get("pending", 0), stats.get("covered", 0),
+        )
+    except Exception as exc:
+        log.error("Intent mining failed: {}", exc, exc_info=True)
 
 
 async def daily_metrics() -> None:

@@ -12,9 +12,22 @@ CONTENT_SYSTEM = (
     "- You have STRONG takes. You think most career advice is garbage. You've been wrong before "
     "and you'll say so. You get frustrated, excited, skeptical.\n"
     "- You write the way you talk to a friend at a bar. Not performing, just being honest.\n\n"
+    "RESEARCH-BACKED WRITING (CRITICAL):\n"
+    "- You will receive RESEARCH with real sources and real data. USE IT.\n"
+    "- DO NOT put citation links inline in the article body. Instead, use numbered "
+    "superscript references like <sup>[1]</sup>, <sup>[2]</sup> etc.\n"
+    "- At the END of article_html, add a <h2>References</h2> section with a numbered list "
+    "linking to each cited source:\n"
+    '  <ol class="sources"><li><a href="url" rel="nofollow noopener noreferrer" target="_blank">Source title or description</a></li>...</ol>\n'
+    "- You MUST cite at least 2-3 real sources from the research.\n"
+    "- ALL external <a> tags MUST have rel=\"nofollow noopener noreferrer\" target=\"_blank\".\n"
+    "- Use the specific facts, stats, and names from the research — NOT made-up numbers.\n"
+    "- Your UNIQUE VALUE: don't just rewrite those articles. Add your own take, "
+    "connect dots they missed, call out what they got wrong, go deeper on one angle.\n"
+    "- If the research is empty, be honest and hedging — use 'from what I've seen' etc.\n\n"
     "ANTI-AI WRITING RULES (these are your highest priority):\n"
-    "1. DO NOT invent statistics. If you don't have a real source, say 'anecdotally' or "
-    "'from what I've seen' or just make your point without a number. NEVER write fake "
+    "1. DO NOT invent statistics. Use ONLY real data from the research provided. "
+    "If the research doesn't give you a number, don't make one up. NEVER write fake "
     "percentages like '67% of hiring managers' or '73% of Fortune 500 companies'.\n"
     "2. DO NOT open with a fictional friend anecdote ('My friend Sarah...'). "
     "If you use a personal story, make it clearly YOUR experience, vague enough to be real.\n"
@@ -47,7 +60,7 @@ CONTENT_SYSTEM = (
     "- 4-10 words. Think indie blog, not content marketing.\n\n"
     "IMAGE MARKERS:\n"
     "Place <!-- IMG:type:description --> where images add real value.\n"
-    "Types: evidence (screenshot/data), chart (visualization), explanatory (diagram), "
+    "Types: evidence (data/source image), chart (visualization), explanatory (diagram), "
     "rhythm (related photo).\n"
     "Use 2-3 markers total. PREFER chart and evidence types. No decorative images.\n"
     "Do NOT place an image at the very start or after every heading.\n\n"
@@ -113,7 +126,9 @@ HUMANIZE_SYSTEM = (
     '- GOOD: "Big companies apparently get millions of applications"\n'
     "If it sounds like something the AI made up to seem credible, soften it or cut it.\n\n"
     "WHAT TO PRESERVE:\n"
-    "- ALL HTML tags, <h2> headings, <img>, <figure>, links, and <!-- IMG:...: --> markers\n"
+    "- ALL HTML tags, <h2> headings, <img>, <figure>, and <!-- IMG:...: --> markers\n"
+    "- The <h2>References</h2> section at the end with its <ol class=\"references\"> list — DO NOT modify, remove, or rewrite it.\n"
+    "- All <sup>[N]</sup> superscript references in the body text — keep them exactly as-is.\n"
     "- Core arguments and factual claims that could be real\n"
     "- The overall structure and topic of each section\n\n"
     "SOCIAL POSTS: Make them sound like a real person typed them on their phone. "
@@ -139,7 +154,7 @@ WECHAT_SYSTEM = (
 )
 
 
-def build_content_prompt(topic: dict) -> str:
+def build_content_prompt(topic: dict, research: dict | None = None) -> str:
     angles_block = ""
     if topic.get("angles"):
         a = topic["angles"]
@@ -156,24 +171,56 @@ def build_content_prompt(topic: dict) -> str:
 
     evidence_block = ""
     source_urls = topic.get("source_urls", [])
-    source_queries = topic.get("source_queries", [])
-    if source_urls or source_queries:
-        evidence_block = "\n\nAvailable evidence for screenshots:"
-        if source_urls:
-            evidence_block += "\nSource URLs (can be captured as screenshots):"
-            for u in source_urls[:5]:
-                evidence_block += f"\n  - {u}"
-        if source_queries:
-            evidence_block += "\nSearch queries (can capture Google Trends for these):"
-            for q in source_queries[:5]:
-                evidence_block += f"\n  - {q}"
+    if source_urls:
+        evidence_block = "\n\nAvailable source URLs (images from these pages may be used):"
+        for u in source_urls[:5]:
+            evidence_block += f"\n  - {u}"
+
+    research_block = ""
+    if research and research.get("research_brief"):
+        research_block = (
+            "\n\n=== RESEARCH (Search + News + Scholar) ===\n"
+            f"{research['research_brief']}\n"
+        )
+        if research.get("sources"):
+            search_sources = [s for s in research["sources"] if s.get("type") == "search"]
+            news_sources = [s for s in research["sources"] if s.get("type") == "news"]
+            scholar_sources = [s for s in research["sources"] if s.get("type") == "scholar"]
+            if search_sources:
+                research_block += "\nSearch sources (competitors):\n"
+                for s in search_sources[:5]:
+                    research_block += f"  - \"{s['title']}\" — {s['url']}\n"
+            if news_sources:
+                research_block += "\nNews sources (fresh angles):\n"
+                for s in news_sources[:4]:
+                    research_block += f"  - \"{s['title']}\" — {s['url']}\n"
+            if scholar_sources:
+                research_block += "\nAcademic sources (data/studies):\n"
+                for s in scholar_sources[:3]:
+                    research_block += f"  - \"{s['title']}\" — {s['url']}\n"
+        research_block += (
+            "\n=== HOW TO USE THIS RESEARCH ===\n"
+            "1. Use numbered superscript refs in the body: <sup>[1]</sup>, <sup>[2]</sup>, etc.\n"
+            "   At the END of article_html, add <h2>References</h2> with a matching <ol class=\"references\"> list.\n"
+            "   Each <li> links to the real source with rel=\"nofollow noopener noreferrer\" target=\"_blank\".\n"
+            "   You MUST cite at least 2-3 real sources.\n"
+            "2. Don't just rewrite what they said. Identify what they MISSED or got WRONG.\n"
+            "3. Your article's UNIQUE VALUE must come from:\n"
+            "   - A take or angle these articles don't have\n"
+            "   - Connecting dots between sources that nobody connected\n"
+            "   - Practical advice that goes beyond the generic tips in these articles\n"
+            "4. Reference specific facts FROM the research (with numbered refs), not made-up stats.\n"
+            "5. If the research found contradictions between sources, call that out.\n"
+            "6. If there are ACADEMIC findings, cite them with author names and data.\n"
+            "7. If there's recent NEWS, weave it in as a timely hook — this is your freshness edge.\n"
+        )
 
     return (
         f"Topic: \"{topic.get('title','')}\"\n"
         f"Angle: {topic.get('suggested_angle','general')}\n"
         f"Cluster: {topic.get('cluster','other')}\n"
         f"Priority: {topic.get('priority','medium')}"
-        f"{angles_block}{signals_block}{evidence_block}\n\n"
+        f"{angles_block}{signals_block}{evidence_block}{research_block}\n\n"
         "Audience: job seekers, career changers, tech professionals.\n"
         "Brand: mockreal.\n"
         "Tone: like a sharp friend giving real advice over coffee. "

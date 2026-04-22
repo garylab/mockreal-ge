@@ -1,0 +1,155 @@
+"""Mine user search intents from multiple data sources.
+
+Sources:
+- Google Autocomplete: what people start typing
+- People Also Ask: questions people ask
+- Google Forums (via SerpAPI): pain signals from Reddit, Quora, etc.
+- Google Trends: rising / breakout queries
+"""
+from __future__ import annotations
+
+import asyncio
+
+from src.storage.models import RawIntent
+from src.utils import serpapi_client
+from loguru import logger as log
+
+
+async def _mine_autocomplete(seed: str) -> list[RawIntent]:
+    data = await serpapi_client.google_autocomplete(seed)
+    results: list[RawIntent] = []
+    for sug in data.get("suggestions", [])[:10]:
+        value = sug.get("value", "").strip()
+        if not value:
+            continue
+        results.append(RawIntent(
+            title=value,
+            source="autocomplete",
+            volume_hint=sug.get("relevance", 500),
+        ))
+    return results
+
+
+async def _mine_paa(seed: str) -> list[RawIntent]:
+    data = await serpapi_client.people_also_ask(seed)
+    results: list[RawIntent] = []
+    for item in data.get("related_questions", []):
+        question = item.get("question", "").strip()
+        if not question:
+            continue
+        # Extract snippet from first text_block paragraph
+        snippet = ""
+        for block in item.get("text_blocks", []):
+            if block.get("type") == "paragraph" and block.get("snippet"):
+                snippet = block["snippet"][:300]
+                break
+        # First reference link serves as source_url
+        refs = item.get("references", [])
+        source_url = refs[0].get("link", "") if refs else ""
+        results.append(RawIntent(
+            title=question,
+            source="paa",
+            source_url=source_url,
+            snippet=snippet,
+            volume_hint=8,
+        ))
+    return results
+
+
+def _parse_engagement(displayed_meta: str) -> int:
+    """Extract comment/answer count from strings like '40+ comments · 14 years ago'."""
+    if not displayed_meta:
+        return 0
+    import re
+    m = re.search(r"(\d+)\+?\s*(?:comment|answer|repl)", displayed_meta, re.IGNORECASE)
+    return int(m.group(1)) if m else 0
+
+
+async def _mine_forums(seed: str) -> list[RawIntent]:
+    data = await serpapi_client.google_forums(seed)
+    results: list[RawIntent] = []
+    for item in data.get("organic_results", [])[:10]:
+        title = item.get("title", "").strip()
+        if not title:
+            continue
+        engagement = _parse_engagement(item.get("displayed_meta", ""))
+        forum_source = item.get("source", "")
+        results.append(RawIntent(
+            title=title,
+            source="forums",
+            source_url=item.get("link", ""),
+            snippet=(item.get("snippet", "") or "")[:300],
+            volume_hint=min(engagement / 5, 10) if engagement else 3,
+            engagement=engagement,
+        ))
+        # Sitelinks are bonus intents (related threads from the same forum)
+        for sl in (item.get("sitelinks", {}).get("list", []) or []):
+            sl_title = sl.get("title", "").strip()
+            if not sl_title:
+                continue
+            sl_engagement = sl.get("answer_count", 0) or 0
+            results.append(RawIntent(
+                title=sl_title,
+                source="forums",
+                source_url=sl.get("link", ""),
+                snippet="",
+                volume_hint=min(sl_engagement / 5, 10) if sl_engagement else 2,
+                engagement=sl_engagement,
+            ))
+    return results
+
+
+async def _mine_trends(seed: str) -> list[RawIntent]:
+    data = await serpapi_client.google_trends(seed)
+    results: list[RawIntent] = []
+
+    for rising in data.get("rising_queries", []):
+        for item in rising.get("queries", [])[:8]:
+            query = item.get("query", "").strip()
+            if not query:
+                continue
+            extracted = int(item.get("extracted_value", 0))
+            results.append(RawIntent(
+                title=query,
+                source="trends",
+                volume_hint=min(extracted / 10, 10) if extracted else 5,
+            ))
+
+    for related in data.get("related_queries", []):
+        for item in related.get("queries", [])[:5]:
+            query = item.get("query", "").strip()
+            if not query:
+                continue
+            extracted = int(item.get("extracted_value", 0))
+            results.append(RawIntent(
+                title=query,
+                source="trends",
+                volume_hint=min(extracted / 10, 10) if extracted else 3,
+            ))
+
+    return results
+
+
+async def mine_intents(seeds: list[str]) -> list[RawIntent]:
+    """Mine user intents from all sources using the given seed keywords.
+
+    Returns a flat list of raw intents (not yet deduped or clustered).
+    """
+    tasks = []
+    for seed in seeds:
+        tasks.append(_mine_autocomplete(seed))
+        tasks.append(_mine_paa(seed))
+        tasks.append(_mine_forums(seed))
+        tasks.append(_mine_trends(seed))
+
+    raw_batches = await asyncio.gather(*tasks, return_exceptions=True)
+
+    all_intents: list[RawIntent] = []
+    for i, batch in enumerate(raw_batches):
+        if isinstance(batch, Exception):
+            log.warning("Intent miner task {} failed: {}", i, batch)
+            continue
+        all_intents.extend(batch)
+
+    log.info("Mined {} raw intents from {} seeds × 4 sources", len(all_intents), len(seeds))
+    return all_intents

@@ -1,5 +1,13 @@
+"""Enrich article HTML with images sourced from research pages, charts, or Pexels.
+
+Image sources (in priority order):
+1. Images extracted from fetched website/news/scholar pages (with source captions)
+2. AI-generated data charts (matplotlib/seaborn)
+3. Pexels stock images (fallback)
+"""
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from urllib.parse import quote_plus
@@ -12,17 +20,13 @@ from src.config import settings
 from src.storage.models import ContentPackage
 from src.storage.r2_client import upload_image
 from src.utils.charts import comparison_bar, donut, stat_highlight, trend_line
-from src.utils.screenshot import (
-    capture_google_trends,
-    capture_reddit_post,
-    capture_url,
-    screenshot_and_upload,
-)
 
 _MARKER_RE = re.compile(
     r"<!--\s*IMG:(evidence|explanatory|rhythm|chart):(.+?)\s*-->", re.IGNORECASE
 )
 
+
+# ── Pexels helpers ────────────────────────────────────────────
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(min=1, max=5))
 async def _search_pexels(query: str) -> dict | None:
@@ -39,45 +43,10 @@ async def _search_pexels(query: str) -> dict | None:
 
 
 async def _download(url: str) -> bytes:
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
         resp = await client.get(url)
         resp.raise_for_status()
         return resp.content
-
-
-async def _resolve_evidence(
-    desc: str, source_urls: list[str], source_queries: list[str],
-) -> str | None:
-    """Try to capture a real screenshot for an evidence marker."""
-    desc_lower = desc.lower()
-
-    if "google trends" in desc_lower or "search spike" in desc_lower or "trend" in desc_lower:
-        query = _extract_query_from_desc(desc, source_queries)
-        if query:
-            url = await screenshot_and_upload(
-                capture_google_trends, query, filename_prefix="trends",
-            )
-            if url:
-                return url
-
-    if "reddit" in desc_lower:
-        for u in source_urls:
-            if "reddit.com" in u:
-                url = await screenshot_and_upload(
-                    capture_reddit_post, u, filename_prefix="reddit",
-                )
-                if url:
-                    return url
-
-    for u in source_urls[:3]:
-        if any(kw in u for kw in ("trends", "reddit", "twitter", "x.com", "news")):
-            url = await screenshot_and_upload(
-                capture_url, u, filename_prefix="evidence",
-            )
-            if url:
-                return url
-
-    return None
 
 
 async def _resolve_pexels(desc: str) -> tuple[str, str, str, str] | None:
@@ -104,24 +73,57 @@ async def _resolve_pexels(desc: str) -> tuple[str, str, str, str] | None:
     return public_url, alt, credit, credit_url
 
 
-def _extract_query_from_desc(desc: str, source_queries: list[str]) -> str:
-    """Extract a search query from the image description, matching against source queries."""
-    desc_words = set(desc.lower().split())
-    best_match = ""
-    best_overlap = 0
-    for q in source_queries:
-        q_words = set(q.lower().split())
-        overlap = len(desc_words & q_words)
-        if overlap > best_overlap:
-            best_overlap = overlap
-            best_match = q
-    if best_match:
-        return best_match
+# ── Source image extraction ───────────────────────────────────
 
-    cleaned = re.sub(r"(google trends|chart|showing|screenshot|data|for)\s*", "", desc, flags=re.I)
-    cleaned = re.sub(r"['\"]", "", cleaned).strip()
-    return cleaned[:60] if cleaned else ""
+async def _find_source_image(
+    desc: str, source_images: list[dict],
+) -> tuple[str, str, str] | None:
+    """Pick and download a relevant image from pre-collected research source images.
 
+    source_images: list of {url, alt, source_url, source_domain} from researcher.
+    Returns (public_url, alt_text, source_caption) or None.
+    """
+    if not source_images:
+        return None
+
+    desc_lower = desc.lower()
+    desc_words = set(desc_lower.split())
+
+    # Score images by keyword overlap with the marker description
+    scored = []
+    for img in source_images:
+        alt_words = set((img.get("alt", "") or "").lower().split())
+        overlap = len(desc_words & alt_words)
+        scored.append((overlap, img))
+    scored.sort(key=lambda x: x[0], reverse=True)
+
+    for _, img in scored[:5]:
+        img_url = img.get("url", "")
+        if not img_url.startswith("http"):
+            continue
+        try:
+            async with httpx.AsyncClient(timeout=20, follow_redirects=True) as client:
+                resp = await client.get(img_url, headers={"User-Agent": "Mozilla/5.0"})
+                if resp.status_code != 200:
+                    continue
+                ctype = resp.headers.get("content-type", "")
+                if "image" not in ctype:
+                    continue
+                if len(resp.content) < 5000:
+                    continue
+                h = hashlib.md5(resp.content).hexdigest()[:10]
+                ext = "jpg" if "jpeg" in ctype else "png"
+                filename = f"source-{h}.{ext}"
+                public_url = upload_image(resp.content, filename)
+                domain = img.get("source_domain", "") or "source"
+                alt = img.get("alt", "") or desc
+                return public_url, alt, f"Source: {domain}"
+        except Exception:
+            continue
+    return None
+
+
+# ── Chart generation ──────────────────────────────────────────
 
 async def _resolve_chart(desc: str) -> str | None:
     """Generate a data chart from a description using AI to extract chart parameters."""
@@ -175,18 +177,24 @@ async def _resolve_chart(desc: str) -> str | None:
     return None
 
 
-def _build_figure(url: str, alt: str, credit: str = "", credit_url: str = "") -> str:
-    caption = ""
+# ── HTML building ─────────────────────────────────────────────
+
+def _build_figure(url: str, alt: str, caption: str = "", credit: str = "", credit_url: str = "") -> str:
+    alt_safe = alt.replace('"', "&quot;")
+    cap_parts: list[str] = []
+    if caption:
+        cap_parts.append(caption)
     if credit:
-        caption = (
-            f'<figcaption>Photo by <a href="{credit_url}">{credit}</a>'
-            f" on Pexels</figcaption>"
-        )
+        link = f'<a href="{credit_url}">{credit}</a> on Pexels' if credit_url else credit
+        cap_parts.append(f"Photo by {link}")
+    figcaption = f"<figcaption>{' — '.join(cap_parts)}</figcaption>" if cap_parts else ""
     return (
-        f'<figure><img src="{url}" alt="{alt}" loading="lazy" width="800" />'
-        f"{caption}</figure>"
+        f'<figure><img src="{url}" alt="{alt_safe}" loading="lazy" width="800" />'
+        f"{figcaption}</figure>"
     )
 
+
+# ── Main enrichment ──────────────────────────────────────────
 
 async def enrich(pkg: ContentPackage) -> ContentPackage:
     """Process <!-- IMG:type:desc --> markers in article HTML, replacing with real images."""
@@ -201,13 +209,16 @@ async def enrich(pkg: ContentPackage) -> ContentPackage:
         log.info("No image markers found in '{}'", pkg.article_title)
         return pkg
 
-    source_urls = pkg.topic.source_urls if pkg.topic else []
-    source_queries = pkg.topic.source_queries if pkg.topic else []
+    source_images = pkg.source_images or []
+    used_source_urls: set[str] = set()
     images: list[dict] = []
 
     for m in reversed(markers):
         img_type = m.group(1).lower()
         desc = m.group(2).strip()
+
+        # Filter out already-used source images to avoid duplicates
+        available_images = [i for i in source_images if i.get("url") not in used_source_urls]
 
         figure_html = ""
         try:
@@ -218,10 +229,12 @@ async def enrich(pkg: ContentPackage) -> ContentPackage:
                     images.append({"type": "chart", "url": chart_url, "desc": desc})
 
             elif img_type == "evidence":
-                evidence_url = await _resolve_evidence(desc, source_urls, source_queries)
-                if evidence_url:
-                    figure_html = _build_figure(evidence_url, desc)
-                    images.append({"type": "evidence", "url": evidence_url, "desc": desc})
+                source_img = await _find_source_image(desc, available_images)
+                if source_img:
+                    public_url, alt, caption = source_img
+                    figure_html = _build_figure(public_url, alt, caption=caption)
+                    images.append({"type": "source", "url": public_url, "desc": desc})
+                    used_source_urls.add(public_url)
                 else:
                     chart_url = await _resolve_chart(desc)
                     if chart_url:
@@ -230,15 +243,23 @@ async def enrich(pkg: ContentPackage) -> ContentPackage:
                     elif settings.pexels_api_key:
                         pexels = await _resolve_pexels(desc)
                         if pexels:
-                            figure_html = _build_figure(*pexels)
-                            images.append({"type": "evidence_fallback", "url": pexels[0], "desc": desc})
+                            url, alt, credit, credit_url = pexels
+                            figure_html = _build_figure(url, alt, credit=credit, credit_url=credit_url)
+                            images.append({"type": "pexels_fallback", "url": url, "desc": desc})
 
             elif img_type in ("explanatory", "rhythm"):
-                if settings.pexels_api_key:
+                source_img = await _find_source_image(desc, available_images)
+                if source_img:
+                    public_url, alt, caption = source_img
+                    figure_html = _build_figure(public_url, alt, caption=caption)
+                    images.append({"type": "source", "url": public_url, "desc": desc})
+                    used_source_urls.add(public_url)
+                elif settings.pexels_api_key:
                     pexels = await _resolve_pexels(desc)
                     if pexels:
-                        figure_html = _build_figure(*pexels)
-                        images.append({"type": img_type, "url": pexels[0], "desc": desc})
+                        url, alt, credit, credit_url = pexels
+                        figure_html = _build_figure(url, alt, credit=credit, credit_url=credit_url)
+                        images.append({"type": img_type, "url": url, "desc": desc})
 
         except Exception as exc:
             log.debug("Image enrichment failed for '{}': {}", desc[:40], exc)

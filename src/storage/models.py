@@ -20,7 +20,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import text as sa_text
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from pgvector.sqlalchemy import Vector
 
@@ -74,72 +74,80 @@ class TrackingEventType(str, Enum):
     share = "share"
 
 
+class IntentStatus(str, Enum):
+    pending = "pending"
+    queued = "queued"
+    covered = "covered"
+    refresh_needed = "refresh_needed"
+
+
+class IntentClusterStatus(str, Enum):
+    mining = "mining"
+    active = "active"
+    covered = "covered"
+    expanding = "expanding"
+
+
 # SA enum types referencing existing PostgreSQL enum types (never CREATE)
 _t_content_status = SAEnum(ContentStatus, name="content_status", create_type=False)
 _t_priority = SAEnum(Priority, name="priority_level", create_type=False)
 _t_platform = SAEnum(Platform, name="platform_type", create_type=False)
 _t_cta = SAEnum(CtaVariant, name="cta_variant", create_type=False)
 _t_event = SAEnum(TrackingEventType, name="tracking_event", create_type=False)
+_t_intent_status = SAEnum(IntentStatus, name="intent_status", create_type=False)
+_t_cluster_status = SAEnum(IntentClusterStatus, name="intent_cluster_status", create_type=False)
 
 
 # =====================================================================
 # SQLAlchemy ORM Models (one per database table)
 # =====================================================================
 
-class TopicRow(Base):
-    __tablename__ = "topics"
+class IntentClusterRow(Base):
+    __tablename__ = "intent_clusters"
 
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    source: Mapped[str] = mapped_column(Text, nullable=False)
-    title: Mapped[str] = mapped_column(Text, nullable=False)
-    url: Mapped[str | None] = mapped_column(Text)
-    engagement: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
-    viral_score: Mapped[Decimal] = mapped_column(Numeric(4, 1), nullable=False, server_default=sa_text("0"))
-    subreddit: Mapped[str | None] = mapped_column(Text)
-    batch_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), nullable=False, server_default=sa_text("gen_random_uuid()"),
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    name: Mapped[str] = mapped_column(Text, nullable=False)
+    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
+    centroid_embedding = mapped_column(Vector(1536), nullable=True)
+    pillar_intent_id: Mapped[int | None] = mapped_column(BigInteger)
+    pillar_content_id: Mapped[str | None] = mapped_column(Text)
+    status = mapped_column(_t_cluster_status, nullable=False, server_default="active")
+    intent_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    covered_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
+    priority_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, server_default=sa_text("0"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=sa_text("NOW()"),
     )
-    fetched_at: Mapped[datetime] = mapped_column(
+    updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("NOW()"),
     )
 
 
-class FusedTopicRow(Base):
-    __tablename__ = "fused_topics"
+class IntentRow(Base):
+    __tablename__ = "intents"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
     embedding = mapped_column(Vector(1536), nullable=True)
-    signal_types = mapped_column(ARRAY(Text), nullable=False, server_default=sa_text("'{}'"))
-    reasoning: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("''"))
-    suggested_angle: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("''"))
-    angles = mapped_column(JSONB, nullable=False, server_default=sa_text("'{}'::jsonb"))
-    source_urls = mapped_column(ARRAY(Text), nullable=False, server_default=sa_text("'{}'"))
-    source_queries = mapped_column(ARRAY(Text), nullable=False, server_default=sa_text("'{}'"))
-    ai_score: Mapped[Decimal | None] = mapped_column(Numeric(4, 1))
-    viral_score: Mapped[Decimal] = mapped_column(Numeric(4, 1), nullable=False, server_default=sa_text("0"))
-    seo_potential: Mapped[Decimal] = mapped_column(Numeric(4, 1), nullable=False, server_default=sa_text("0"))
-    decision: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("'IGNORE'"))
-    cluster: Mapped[str | None] = mapped_column(Text)
-    is_duplicate: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("FALSE"))
-    priority = mapped_column(_t_priority, server_default="medium")
+    source: Mapped[str] = mapped_column(Text, nullable=False)
+    source_url: Mapped[str | None] = mapped_column(Text)
+    snippet: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("''"))
+    volume_hint: Mapped[Decimal] = mapped_column(Numeric(6, 1), nullable=False, server_default=sa_text("0"))
+    competition_hint: Mapped[Decimal] = mapped_column(Numeric(4, 2), nullable=False, server_default=sa_text("0"))
+    priority_score: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False, server_default=sa_text("0"))
+    cluster_id: Mapped[int | None] = mapped_column(
+        Integer, ForeignKey("intent_clusters.id", ondelete="SET NULL"),
+    )
+    content_id: Mapped[str | None] = mapped_column(Text)
+    is_pillar: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("FALSE"))
+    status = mapped_column(_t_intent_status, nullable=False, server_default="pending")
     batch_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), nullable=False, server_default=sa_text("gen_random_uuid()"),
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=sa_text("NOW()"),
     )
-
-
-class ClusterRow(Base):
-    __tablename__ = "clusters"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    slug: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    label: Mapped[str] = mapped_column(Text, nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), nullable=False, server_default=sa_text("NOW()"),
-    )
+    covered_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class ContentRow(Base):
@@ -147,8 +155,8 @@ class ContentRow(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     content_id: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
-    fused_topic_id: Mapped[int | None] = mapped_column(
-        BigInteger, ForeignKey("fused_topics.id", ondelete="SET NULL"),
+    intent_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("intents.id", ondelete="SET NULL"),
     )
     title: Mapped[str] = mapped_column(Text, nullable=False)
     title_embedding = mapped_column(Vector(1536), nullable=True)
@@ -163,7 +171,7 @@ class ContentRow(Base):
     image_url: Mapped[str | None] = mapped_column(Text)
     score: Mapped[Decimal] = mapped_column(Numeric(4, 1), nullable=False, server_default=sa_text("0"))
     cluster: Mapped[str | None] = mapped_column(
-        Text, ForeignKey("clusters.slug", ondelete="SET NULL"),
+        Text, ForeignKey("intent_clusters.slug", ondelete="SET NULL"),
     )
     suggested_angle: Mapped[str | None] = mapped_column(Text)
     priority = mapped_column(_t_priority, nullable=False, server_default="medium")
@@ -259,7 +267,7 @@ class AbResultRow(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     cluster: Mapped[str] = mapped_column(
-        Text, ForeignKey("clusters.slug", ondelete="CASCADE"), nullable=False,
+        Text, ForeignKey("intent_clusters.slug", ondelete="CASCADE"), nullable=False,
     )
     variant_a_impressions: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
     variant_a_clicks: Mapped[int] = mapped_column(Integer, nullable=False, server_default=sa_text("0"))
@@ -302,13 +310,14 @@ class DashboardSnapshotRow(Base):
 # Pydantic models (pipeline data — NOT database rows)
 # =====================================================================
 
-class RawSignal(BaseModel):
+class RawIntent(BaseModel):
+    """A single user search intent mined from a data source."""
     title: str
-    source: str
-    url: str = ""
-    engagement: float = 0
+    source: str  # autocomplete, paa, forums, trends
+    source_url: str = ""
     snippet: str = ""
-    extra: dict[str, Any] = Field(default_factory=dict)
+    volume_hint: float = 0
+    engagement: float = 0
 
 
 class ScoredTopic(BaseModel):
@@ -349,6 +358,7 @@ class ContentPackage(BaseModel):
     cta_variant_b: str = ""
     featured_image_url: str = ""
     section_images: list[dict[str, str]] = Field(default_factory=list)
+    source_images: list[dict] = Field(default_factory=list)
     humanized: bool = False
     status: ContentStatus = ContentStatus.draft
     created_at: datetime = Field(default_factory=datetime.utcnow)

@@ -14,10 +14,10 @@ from src.config import settings
 from src.storage.models import (
     ContentRow,
     ContentStatus,
-    FusedTopicRow,
+    IntentClusterRow,
+    IntentRow,
     PerformanceRow,
     PublishLogRow,
-    TopicRow,
 )
 
 
@@ -70,170 +70,6 @@ def _to_dict(row: Any) -> dict:
     return d
 
 
-# ── Signals / Topics ───────────────────────────────────────────
-
-async def fetch_recent_signals(days: int = 7, exclude_batch: str = "") -> list[dict]:
-    async with get_session() as session:
-        result = await session.execute(
-            text("""
-                SELECT source, title, url, engagement, viral_score, subreddit,
-                       batch_id::text, fetched_at,
-                       COUNT(*) OVER (PARTITION BY LOWER(title)) AS occurrence_count
-                FROM topics
-                WHERE fetched_at > NOW() - :days * INTERVAL '1 day'
-                  AND (:exclude = '' OR batch_id::text != :exclude)
-                ORDER BY fetched_at DESC
-            """),
-            {"days": days, "exclude": exclude_batch},
-        )
-        return [
-            {
-                "source": r["source"],
-                "title": r["title"],
-                "url": r["url"] or "",
-                "engagement": int(r["engagement"]),
-                "viral_score": float(r["viral_score"]),
-                "subreddit": r["subreddit"],
-                "occurrence_count": int(r["occurrence_count"]),
-            }
-            for r in result.mappings().all()
-        ]
-
-
-async def insert_signals(signals: list[dict], batch_id: str) -> int:
-    if not signals:
-        return 0
-    async with get_session() as session:
-        rows = [
-            {
-                "source": s.get("source", "unknown"),
-                "title": s.get("title", ""),
-                "url": s.get("url", ""),
-                "engagement": int(s.get("engagement", 0)),
-                "viral_score": float(s.get("viral_score", 0)),
-                "subreddit": s.get("subreddit"),
-                "batch_id": _uuid.UUID(batch_id),
-            }
-            for s in signals
-        ]
-        await session.execute(insert(TopicRow), rows)
-        await session.commit()
-        return len(rows)
-
-
-# ── Fused Topics (AI-generated) ────────────────────────────────
-
-async def insert_fused_topics(
-    topics: list[dict],
-    embeddings: list[list[float]],
-    batch_id: str,
-) -> dict[str, int]:
-    """Insert AI-generated fused topics with embeddings.
-
-    Returns a mapping of lowercase title -> fused_topics.id.
-    """
-    async with get_session() as session:
-        title_to_id: dict[str, int] = {}
-        bid = _uuid.UUID(batch_id)
-        for t, emb in zip(topics, embeddings):
-            title = t.get("title", "")
-            result = await session.execute(
-                insert(FusedTopicRow)
-                .values(
-                    title=title,
-                    embedding=emb,
-                    signal_types=t.get("signal_types", []),
-                    reasoning=t.get("reasoning", ""),
-                    suggested_angle=t.get("suggested_angle", ""),
-                    angles=t.get("angles", {}),
-                    source_urls=t.get("source_urls", []),
-                    source_queries=t.get("source_queries", []),
-                    viral_score=float(t.get("viral_score", 0)),
-                    seo_potential=float(t.get("seo_potential", 0)),
-                    batch_id=bid,
-                )
-                .returning(FusedTopicRow.id)
-            )
-            title_to_id[title.lower()] = result.scalar_one()
-        await session.commit()
-        return title_to_id
-
-
-async def update_fused_topic_scores(scored_topics: list, batch_id: str) -> int:
-    """Update fused topics with AI scores, decisions, and clusters after scoring."""
-    async with get_session() as session:
-        count = 0
-        for t in scored_topics:
-            title = t.title if hasattr(t, "title") else t.get("title", "")
-            await session.execute(
-                text("""
-                    UPDATE fused_topics
-                    SET ai_score = :score, decision = :decision, cluster = :cluster,
-                        suggested_angle = :angle, priority = CAST(:priority AS priority_level),
-                        is_duplicate = :is_dup
-                    WHERE batch_id = CAST(:bid AS uuid) AND LOWER(title) = LOWER(:title)
-                """),
-                {
-                    "score": float(t.score if hasattr(t, "score") else 0),
-                    "decision": t.decision if hasattr(t, "decision") else "IGNORE",
-                    "cluster": t.cluster if hasattr(t, "cluster") else "other",
-                    "angle": t.suggested_angle if hasattr(t, "suggested_angle") else "",
-                    "priority": (
-                        t.priority.value
-                        if hasattr(t, "priority") and hasattr(t.priority, "value")
-                        else "medium"
-                    ),
-                    "is_dup": t.is_duplicate if hasattr(t, "is_duplicate") else False,
-                    "bid": batch_id,
-                    "title": title,
-                },
-            )
-            count += 1
-        await session.commit()
-        return count
-
-
-async def find_similar_fused(
-    embedding: list[float],
-    threshold: float = 0.85,
-    days: int = 30,
-    limit: int = 5,
-    exclude_batch: str = "",
-) -> list[dict]:
-    """Find fused topics whose embedding is within cosine similarity threshold."""
-    async with get_session() as session:
-        result = await session.execute(
-            text("""
-                SELECT title, 1 - (embedding <=> CAST(:vec AS vector)) AS similarity
-                FROM fused_topics
-                WHERE created_at > NOW() - :days * INTERVAL '1 day'
-                  AND embedding IS NOT NULL
-                  AND (:exclude = '' OR batch_id::text != :exclude)
-                ORDER BY embedding <=> CAST(:vec AS vector)
-                LIMIT :lim
-            """),
-            {"vec": _vec_literal(embedding), "days": days, "lim": limit, "exclude": exclude_batch},
-        )
-        return [
-            {"title": r["title"], "similarity": float(r["similarity"])}
-            for r in result.mappings().all()
-            if float(r["similarity"]) >= threshold
-        ]
-
-
-async def find_similar_fused_batch(
-    embeddings: list[list[float]],
-    threshold: float = 0.85,
-    days: int = 30,
-) -> list[list[dict]]:
-    """Check each embedding against recent fused topics for duplicates."""
-    results = []
-    for emb in embeddings:
-        similar = await find_similar_fused(emb, threshold=threshold, days=days)
-        results.append(similar)
-    return results
-
-
 # ── Content CRUD ───────────────────────────────────────────────
 
 async def find_similar_content(
@@ -283,14 +119,14 @@ async def insert_draft(
     image_url: str = "",
     wechat_article: str = "",
     title_embedding: list[float] | None = None,
-    fused_topic_id: int | None = None,
+    intent_id: int | None = None,
 ) -> None:
     async with get_session() as session:
         stmt = (
             pg_insert(ContentRow)
             .values(
                 content_id=content_id,
-                fused_topic_id=fused_topic_id,
+                intent_id=intent_id,
                 title=title,
                 title_embedding=title_embedding,
                 cluster=cluster,
@@ -557,6 +393,215 @@ async def fetch_content(content_id: str) -> dict | None:
         )
         row = result.scalar_one_or_none()
         return _to_dict(row) if row else None
+
+
+async def find_related_published(
+    embedding: list[float],
+    exclude_id: str = "",
+    limit: int = 3,
+) -> list[dict]:
+    """Find similar published content for internal linking."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT content_id, title, 1 - (title_embedding <=> CAST(:vec AS vector)) AS similarity
+                FROM content
+                WHERE status IN ('approved', 'published')
+                  AND title_embedding IS NOT NULL
+                  AND content_id != :exclude
+                ORDER BY title_embedding <=> CAST(:vec AS vector)
+                LIMIT :lim
+            """),
+            {"vec": _vec_literal(embedding), "exclude": exclude_id, "lim": limit},
+        )
+        return [
+            {"content_id": r["content_id"], "title": r["title"], "similarity": float(r["similarity"])}
+            for r in result.mappings().all()
+            if float(r["similarity"]) >= 0.5
+        ]
+
+
+# ── Intents & Intent Clusters ─────────────────────────────────
+
+async def insert_intent_cluster(
+    name: str,
+    slug: str,
+    centroid_embedding: list[float] | None = None,
+    intent_count: int = 0,
+    priority_score: float = 0,
+) -> int:
+    """Insert a new intent cluster, returns the cluster id."""
+    async with get_session() as session:
+        result = await session.execute(
+            insert(IntentClusterRow)
+            .values(
+                name=name,
+                slug=slug,
+                centroid_embedding=centroid_embedding,
+                intent_count=intent_count,
+                priority_score=priority_score,
+            )
+            .returning(IntentClusterRow.id)
+        )
+        cid = result.scalar_one()
+        await session.commit()
+        return cid
+
+
+async def update_intent_cluster_pillar(
+    cluster_id: int,
+    pillar_intent_id: int,
+) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(IntentClusterRow)
+            .where(IntentClusterRow.id == cluster_id)
+            .values(pillar_intent_id=pillar_intent_id)
+        )
+        await session.commit()
+
+
+async def insert_intent(
+    title: str,
+    embedding: list[float] | None,
+    source: str,
+    source_url: str = "",
+    snippet: str = "",
+    volume_hint: float = 0,
+    priority_score: float = 0,
+    cluster_id: int | None = None,
+    is_pillar: bool = False,
+    batch_id: str = "",
+) -> int:
+    """Insert a new intent, returns the intent id."""
+    async with get_session() as session:
+        vals: dict[str, Any] = dict(
+            title=title,
+            embedding=embedding,
+            source=source,
+            source_url=source_url or None,
+            snippet=snippet,
+            volume_hint=volume_hint,
+            priority_score=priority_score,
+            cluster_id=cluster_id,
+            is_pillar=is_pillar,
+        )
+        if batch_id:
+            vals["batch_id"] = _uuid.UUID(batch_id)
+        result = await session.execute(
+            insert(IntentRow).values(**vals).returning(IntentRow.id)
+        )
+        iid = result.scalar_one()
+        await session.commit()
+        return iid
+
+
+async def find_similar_intent(
+    embedding: list[float],
+    threshold: float = 0.88,
+    days: int = 90,
+) -> dict | None:
+    """Find an existing intent whose embedding is within threshold."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT id, title, 1 - (embedding <=> CAST(:vec AS vector)) AS similarity
+                FROM intents
+                WHERE created_at > NOW() - :days * INTERVAL '1 day'
+                  AND embedding IS NOT NULL
+                ORDER BY embedding <=> CAST(:vec AS vector)
+                LIMIT 1
+            """),
+            {"vec": _vec_literal(embedding), "days": days},
+        )
+        row = result.mappings().first()
+        if row and float(row["similarity"]) >= threshold:
+            return {"id": row["id"], "title": row["title"], "similarity": float(row["similarity"])}
+        return None
+
+
+async def fetch_active_clusters() -> list[dict]:
+    """Fetch intent clusters that still have uncovered intents."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT ic.id, ic.name, ic.slug, ic.pillar_intent_id,
+                       ic.pillar_content_id, ic.status,
+                       ic.intent_count, ic.covered_count,
+                       ic.priority_score
+                FROM intent_clusters ic
+                WHERE ic.status IN ('active', 'expanding')
+                  AND ic.covered_count < ic.intent_count
+                ORDER BY ic.priority_score DESC
+            """)
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
+async def fetch_cluster_intents(
+    cluster_id: int,
+    status: str = "pending",
+) -> list[dict]:
+    """Fetch intents for a cluster, optionally filtered by status."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT id, title, embedding IS NOT NULL AS has_embedding,
+                       source, volume_hint, priority_score, is_pillar, status
+                FROM intents
+                WHERE cluster_id = :cid AND status = :status
+                ORDER BY is_pillar DESC, priority_score DESC
+            """),
+            {"cid": cluster_id, "status": status},
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
+async def mark_intent_covered(intent_id: int, content_id: str) -> None:
+    """Mark an intent as covered and link it to the produced content."""
+    async with get_session() as session:
+        await session.execute(
+            update(IntentRow)
+            .where(IntentRow.id == intent_id)
+            .values(status="covered", content_id=content_id, covered_at=func.now())
+        )
+        # Increment cluster's covered_count
+        await session.execute(
+            text("""
+                UPDATE intent_clusters
+                SET covered_count = covered_count + 1
+                WHERE id = (SELECT cluster_id FROM intents WHERE id = :iid)
+            """),
+            {"iid": intent_id},
+        )
+        await session.commit()
+
+
+async def mark_cluster_covered(cluster_id: int) -> None:
+    async with get_session() as session:
+        await session.execute(
+            update(IntentClusterRow)
+            .where(IntentClusterRow.id == cluster_id)
+            .values(status="covered")
+        )
+        await session.commit()
+
+
+async def fetch_intent_stats() -> dict:
+    """Get summary counts for the intent system."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT
+                  COUNT(*) AS total_intents,
+                  COUNT(*) FILTER (WHERE status = 'pending') AS pending,
+                  COUNT(*) FILTER (WHERE status = 'covered') AS covered,
+                  COUNT(DISTINCT cluster_id) AS total_clusters
+                FROM intents
+            """)
+        )
+        row = result.mappings().first()
+        return dict(row) if row else {}
 
 
 async def ping() -> bool:

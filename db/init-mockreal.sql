@@ -41,74 +41,65 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
+DO $$ BEGIN
+  CREATE TYPE intent_status AS ENUM (
+    'pending', 'queued', 'covered', 'refresh_needed'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
+DO $$ BEGIN
+  CREATE TYPE intent_cluster_status AS ENUM (
+    'mining', 'active', 'covered', 'expanding'
+  );
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+
 -- ============================================================
--- TABLE: topics
--- Raw trending topics collected from all data sources.
+-- TABLE: intent_clusters
+-- Dynamic topic groups formed by embedding similarity.
+-- Each cluster produces a pillar article + supporting articles.
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS topics (
-  id              BIGSERIAL       PRIMARY KEY,
-  source          TEXT            NOT NULL,
-  title           TEXT            NOT NULL,
-  url             TEXT,
-  engagement      INTEGER         NOT NULL DEFAULT 0,
-  viral_score     NUMERIC(4,1)   NOT NULL DEFAULT 0,
-  subreddit       TEXT,
-  batch_id        UUID            NOT NULL DEFAULT gen_random_uuid(),
-  fetched_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS intent_clusters (
+  id                  SERIAL                   PRIMARY KEY,
+  name                TEXT                     NOT NULL,
+  slug                TEXT                     UNIQUE NOT NULL,
+  centroid_embedding  vector(1536),
+  pillar_intent_id    BIGINT,
+  pillar_content_id   TEXT,
+  status              intent_cluster_status    NOT NULL DEFAULT 'active',
+  intent_count        INTEGER                  NOT NULL DEFAULT 0,
+  covered_count       INTEGER                  NOT NULL DEFAULT 0,
+  priority_score      NUMERIC(6,2)             NOT NULL DEFAULT 0,
+  created_at          TIMESTAMPTZ              NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ              NOT NULL DEFAULT NOW()
 );
 
 -- ============================================================
--- TABLE: fused_topics
--- AI-generated hybrid topics from signal fusion + scoring.
--- Kept separate from raw signals in `topics`.
+-- TABLE: intents
+-- User search intents mined from autocomplete, PAA, forums, trends.
+-- The atomic unit of the growth engine.
 -- ============================================================
 
-CREATE TABLE IF NOT EXISTS fused_topics (
-  id              BIGSERIAL        PRIMARY KEY,
-  title           TEXT             NOT NULL,
-  embedding       vector(1536),
-  signal_types    TEXT[]           NOT NULL DEFAULT '{}',
-  reasoning       TEXT             NOT NULL DEFAULT '',
-  suggested_angle TEXT             NOT NULL DEFAULT '',
-  angles          JSONB            NOT NULL DEFAULT '{}'::jsonb,
-  source_urls     TEXT[]           NOT NULL DEFAULT '{}',
-  source_queries  TEXT[]           NOT NULL DEFAULT '{}',
-  ai_score        NUMERIC(4,1),
-  viral_score     NUMERIC(4,1)     NOT NULL DEFAULT 0,
-  seo_potential   NUMERIC(4,1)     NOT NULL DEFAULT 0,
-  decision        TEXT             NOT NULL DEFAULT 'IGNORE',
-  cluster         TEXT,
-  is_duplicate    BOOLEAN          NOT NULL DEFAULT FALSE,
-  priority        priority_level   DEFAULT 'medium',
-  batch_id        UUID             NOT NULL DEFAULT gen_random_uuid(),
-  created_at      TIMESTAMPTZ      NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS intents (
+  id                  BIGSERIAL                PRIMARY KEY,
+  title               TEXT                     NOT NULL,
+  embedding           vector(1536),
+  source              TEXT                     NOT NULL,
+  source_url          TEXT,
+  snippet             TEXT                     NOT NULL DEFAULT '',
+  volume_hint         NUMERIC(6,1)             NOT NULL DEFAULT 0,
+  competition_hint    NUMERIC(4,2)             NOT NULL DEFAULT 0,
+  priority_score      NUMERIC(6,2)             NOT NULL DEFAULT 0,
+  cluster_id          INTEGER                  REFERENCES intent_clusters(id) ON DELETE SET NULL,
+  content_id          TEXT,
+  is_pillar           BOOLEAN                  NOT NULL DEFAULT FALSE,
+  status              intent_status            NOT NULL DEFAULT 'pending',
+  batch_id            UUID                     NOT NULL DEFAULT gen_random_uuid(),
+  created_at          TIMESTAMPTZ              NOT NULL DEFAULT NOW(),
+  covered_at          TIMESTAMPTZ
 );
-
--- ============================================================
--- TABLE: clusters
--- Reference table for content clusters with performance memory.
--- ============================================================
-
-CREATE TABLE IF NOT EXISTS clusters (
-  id              SERIAL          PRIMARY KEY,
-  slug            TEXT            UNIQUE NOT NULL,
-  label           TEXT            NOT NULL,
-  updated_at      TIMESTAMPTZ     NOT NULL DEFAULT NOW()
-);
-
-INSERT INTO clusters (slug, label) VALUES
-  ('interview_prep',     'Interview Preparation'),
-  ('career_transition',  'Career Transition'),
-  ('ai_tools',           'AI Tools & Productivity'),
-  ('job_market',         'Job Market Trends'),
-  ('resume_skills',      'Resume & Skills'),
-  ('layoff_survival',    'Layoff Survival'),
-  ('salary_negotiation', 'Salary Negotiation'),
-  ('remote_work',        'Remote Work'),
-  ('tech_industry',      'Tech Industry'),
-  ('other',              'Other')
-ON CONFLICT (slug) DO NOTHING;
 
 -- ============================================================
 -- TABLE: content
@@ -118,7 +109,7 @@ ON CONFLICT (slug) DO NOTHING;
 CREATE TABLE IF NOT EXISTS content (
   id                    BIGSERIAL                PRIMARY KEY,
   content_id            TEXT                     UNIQUE NOT NULL,
-  fused_topic_id        BIGINT                   REFERENCES fused_topics(id) ON DELETE SET NULL,
+  intent_id             BIGINT                   REFERENCES intents(id) ON DELETE SET NULL,
   title                 TEXT                     NOT NULL,
   title_embedding       vector(1536),
   article_html          TEXT,
@@ -131,7 +122,7 @@ CREATE TABLE IF NOT EXISTS content (
   meta_description      TEXT,
   image_url             TEXT,
   score                 NUMERIC(4,1)             NOT NULL DEFAULT 0,
-  cluster               TEXT                     REFERENCES clusters(slug) ON DELETE SET NULL,
+  cluster               TEXT                     REFERENCES intent_clusters(slug) ON DELETE SET NULL,
   suggested_angle       TEXT,
   priority              priority_level  NOT NULL DEFAULT 'medium',
   cta_variant_a         TEXT,
@@ -216,7 +207,7 @@ CREATE TABLE IF NOT EXISTS performance (
 
 CREATE TABLE IF NOT EXISTS ab_results (
   id              SERIAL          PRIMARY KEY,
-  cluster         TEXT            NOT NULL REFERENCES clusters(slug) ON DELETE CASCADE,
+  cluster         TEXT            NOT NULL REFERENCES intent_clusters(slug) ON DELETE CASCADE,
   variant_a_impressions INTEGER   NOT NULL DEFAULT 0,
   variant_a_clicks     INTEGER   NOT NULL DEFAULT 0,
   variant_a_signups    INTEGER   NOT NULL DEFAULT 0,
@@ -258,16 +249,18 @@ CREATE TABLE IF NOT EXISTS dashboard_snapshots (
 -- INDEXES
 -- ============================================================
 
--- topics
-CREATE INDEX IF NOT EXISTS idx_topics_source       ON topics (source);
-CREATE INDEX IF NOT EXISTS idx_topics_batch         ON topics (batch_id);
-CREATE INDEX IF NOT EXISTS idx_topics_fetched       ON topics (fetched_at DESC);
+-- intent_clusters
+CREATE INDEX IF NOT EXISTS idx_icluster_status      ON intent_clusters (status);
+CREATE INDEX IF NOT EXISTS idx_icluster_priority    ON intent_clusters (priority_score DESC);
+CREATE INDEX IF NOT EXISTS idx_icluster_centroid    ON intent_clusters USING hnsw (centroid_embedding vector_cosine_ops);
 
--- fused_topics
-CREATE INDEX IF NOT EXISTS idx_fused_batch           ON fused_topics (batch_id);
-CREATE INDEX IF NOT EXISTS idx_fused_created         ON fused_topics (created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_fused_decision        ON fused_topics (decision);
-CREATE INDEX IF NOT EXISTS idx_fused_embedding       ON fused_topics USING hnsw (embedding vector_cosine_ops);
+-- intents
+CREATE INDEX IF NOT EXISTS idx_intent_status        ON intents (status);
+CREATE INDEX IF NOT EXISTS idx_intent_cluster       ON intents (cluster_id);
+CREATE INDEX IF NOT EXISTS idx_intent_embedding     ON intents USING hnsw (embedding vector_cosine_ops);
+CREATE INDEX IF NOT EXISTS idx_intent_batch         ON intents (batch_id);
+CREATE INDEX IF NOT EXISTS idx_intent_created       ON intents (created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_intent_priority      ON intents (priority_score DESC);
 
 -- content
 CREATE INDEX IF NOT EXISTS idx_content_embedding    ON content USING hnsw (title_embedding vector_cosine_ops);
@@ -318,8 +311,8 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-  CREATE TRIGGER trg_clusters_updated
-    BEFORE UPDATE ON clusters
+  CREATE TRIGGER trg_intent_clusters_updated
+    BEFORE UPDATE ON intent_clusters
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
@@ -365,17 +358,17 @@ GROUP BY c.content_id, c.title, c.cluster, c.score,
 
 CREATE OR REPLACE VIEW cluster_performance AS
 SELECT
-  cl.slug                                AS cluster,
-  cl.label,
+  ic.slug                                AS cluster,
+  ic.name                                AS label,
   COUNT(DISTINCT c.content_id)           AS total_content,
   COALESCE(AVG(p.ctr), 0)               AS avg_ctr,
   COALESCE(AVG(p.conversion_rate), 0)    AS avg_conversion,
   COALESCE(SUM(p.signups), 0)           AS total_signups,
-  cl.updated_at
-FROM clusters cl
-LEFT JOIN content c   ON cl.slug = c.cluster AND c.status IN ('approved', 'published')
+  ic.updated_at
+FROM intent_clusters ic
+LEFT JOIN content c   ON ic.slug = c.cluster AND c.status IN ('approved', 'published')
 LEFT JOIN performance p ON c.content_id = p.content_id
-GROUP BY cl.slug, cl.label, cl.updated_at;
+GROUP BY ic.slug, ic.name, ic.updated_at;
 
 -- ============================================================
 -- VIEW: low_ctr_candidates

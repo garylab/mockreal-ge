@@ -22,6 +22,7 @@ class Settings(BaseSettings):
 
     # Data sources
     serpapi_key: str = ""
+    serper_api_key: str = ""
     twitter_bearer_token: str = ""
 
     # Telegram
@@ -59,6 +60,11 @@ class Settings(BaseSettings):
     # Content generation
     max_articles_per_run: int = 3
 
+    # Intent mining
+    seed_keywords: str = "AI interview,mock interview,job interview tips,career change,tech layoffs,AI hiring,resume optimization,salary negotiation,remote work tips"
+    intent_cluster_similarity: float = 0.75
+    intent_dedup_similarity: float = 0.88
+
     # Rate limiting
     max_concurrent_api: int = 5
     max_concurrent_ai: int = 2
@@ -90,6 +96,13 @@ def get_blacklist() -> list[str]:
     if not raw:
         return []
     return [w.strip().lower() for w in raw.split(",") if w.strip()]
+
+
+def get_seed_keywords() -> list[str]:
+    raw = settings.seed_keywords.strip()
+    if not raw:
+        return []
+    return [w.strip() for w in raw.split(",") if w.strip()]
 
 
 BANNED_PHRASES = [
