@@ -23,7 +23,6 @@ class Settings(BaseSettings):
     # Data sources
     serpapi_key: str = ""
     serper_api_key: str = ""
-    twitter_bearer_token: str = ""
 
     # Telegram
     telegram_bot_token: str = ""
@@ -54,8 +53,6 @@ class Settings(BaseSettings):
     app_port: int = 8000
     pipeline_interval_hours: int = 6
     metrics_hour: int = 3
-    score_threshold: int = 7
-    viral_threshold: int = 8
 
     # Content generation
     max_articles_per_run: int = 3
@@ -70,12 +67,6 @@ class Settings(BaseSettings):
     max_concurrent_api: int = 5
     max_concurrent_ai: int = 2
 
-    # Topic blacklist (comma-separated keywords to exclude)
-    topic_blacklist: str = ""
-
-    # Publish scheduling (comma-separated hours in 24h format, e.g. "8,12,18")
-    publish_hours: str = "8,12,18"
-
     # Auto-approve drafts without Telegram (useful for local debugging)
     auto_approve: bool = False
 
@@ -85,13 +76,6 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-
-def get_blacklist() -> list[str]:
-    raw = settings.topic_blacklist.strip()
-    if not raw:
-        return []
-    return [w.strip().lower() for w in raw.split(",") if w.strip()]
 
 
 def get_seed_keywords() -> list[str]:
