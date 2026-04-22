@@ -15,6 +15,14 @@ from src.utils import serpapi_client
 from loguru import logger as log
 
 
+def _slugify_url(text: str) -> str:
+    import re
+    slug = text.lower().strip()
+    slug = re.sub(r"[^\w\s-]", "", slug)
+    slug = re.sub(r"[\s_]+", "-", slug)
+    return slug[:80].strip("-")
+
+
 async def _mine_autocomplete(seed: str) -> list[RawIntent]:
     data = await serpapi_client.google_autocomplete(seed)
     results: list[RawIntent] = []
@@ -25,6 +33,7 @@ async def _mine_autocomplete(seed: str) -> list[RawIntent]:
         results.append(RawIntent(
             title=value,
             source="autocomplete",
+            source_url=f"autocomplete://{_slugify_url(value)}",
             volume_hint=sug.get("relevance", 500),
         ))
     return results
@@ -112,6 +121,7 @@ async def _mine_trends(seed: str) -> list[RawIntent]:
             results.append(RawIntent(
                 title=query,
                 source="trends",
+                source_url=f"trends://{_slugify_url(query)}",
                 volume_hint=min(extracted / 10, 10) if extracted else 5,
             ))
 
@@ -124,6 +134,7 @@ async def _mine_trends(seed: str) -> list[RawIntent]:
             results.append(RawIntent(
                 title=query,
                 source="trends",
+                source_url=f"trends://{_slugify_url(query)}",
                 volume_hint=min(extracted / 10, 10) if extracted else 3,
             ))
 

@@ -10,6 +10,7 @@ CREATE EXTENSION IF NOT EXISTS vector;
 
 DO $$ BEGIN
   CREATE TYPE content_status AS ENUM (
+    'researched', 'generated', 'enriched',
     'draft', 'approved', 'rejected', 'published', 'archived'
   );
 EXCEPTION WHEN duplicate_object THEN NULL;
@@ -112,6 +113,7 @@ CREATE TABLE IF NOT EXISTS content (
   intent_id             BIGINT                   REFERENCES intents(id) ON DELETE SET NULL,
   title                 TEXT                     NOT NULL,
   title_embedding       vector(1536),
+  research_data         JSONB                    NOT NULL DEFAULT '{}'::jsonb,
   article_html          TEXT,
   medium_article        TEXT,
   wechat_article        TEXT,

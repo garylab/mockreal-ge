@@ -39,16 +39,8 @@ def _cosine_sim(a: np.ndarray, b: np.ndarray) -> float:
 
 
 async def _dedup_exact(intents: list[RawIntent]) -> list[RawIntent]:
-    """Remove exact-title duplicates, keeping highest volume_hint."""
-    seen: dict[str, RawIntent] = {}
-    for intent in intents:
-        key = intent.title.lower().strip()
-        if not key:
-            continue
-        existing = seen.get(key)
-        if existing is None or intent.volume_hint > existing.volume_hint:
-            seen[key] = intent
-    return list(seen.values())
+    """Remove empty titles only. Semantic dedup handles true duplicates."""
+    return [i for i in intents if i.title.strip()]
 
 
 async def _dedup_semantic(
@@ -208,9 +200,9 @@ async def process_intents(
 
     Returns summary dict with counts.
     """
-    # 1. Exact dedup
+    # 1. Filter empty titles
     intents = await _dedup_exact(raw_intents)
-    log.info("After exact dedup: {} intents", len(intents))
+    log.info("After filter: {} intents", len(intents))
 
     if not intents:
         return {"total": 0, "clusters": 0, "intents": 0}
@@ -220,10 +212,7 @@ async def process_intents(
     embeddings = await embed_texts(titles)
     log.info("Embedded {} intents", len(embeddings))
 
-    # 3. Semantic dedup within batch
-    intents, embeddings = await _dedup_semantic(intents, embeddings)
-
-    # 4. Dedup against existing DB intents
+    # 3. Dedup against existing DB intents (prevents re-mining across runs)
     intents, embeddings = await _dedup_against_db(intents, embeddings)
 
     if not intents:

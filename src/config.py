@@ -59,10 +59,11 @@ class Settings(BaseSettings):
 
     # Content generation
     max_articles_per_run: int = 3
+    max_content_per_cluster: int = 8
 
     # Intent mining
     seed_keywords: str = "AI interview,mock interview,job interview tips,career change,tech layoffs,AI hiring,resume optimization,salary negotiation,remote work tips"
-    intent_cluster_similarity: float = 0.75
+    intent_cluster_similarity: float = 0.70
     intent_dedup_similarity: float = 0.88
 
     # Rate limiting
@@ -85,11 +86,6 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-CLUSTERS = [
-    "interview_prep", "career_transition", "ai_tools", "job_market",
-    "resume_skills", "layoff_survival", "salary_negotiation",
-    "remote_work", "tech_industry", "other",
-]
 
 def get_blacklist() -> list[str]:
     raw = settings.topic_blacklist.strip()

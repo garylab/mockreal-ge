@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 
 from src.approval.telegram_bot import send_for_approval
@@ -22,7 +23,7 @@ from src.publishers.medium import MediumPublisher
 from src.publishers.wechat import WechatPublisher
 from src.publishers.website import WebsitePublisher
 from src.storage import database as db
-from src.storage.models import ScoredTopic
+from src.storage.models import ContentPackage, ScoredTopic
 from src.utils.ai_client import embed_text
 from loguru import logger as log
 
@@ -30,157 +31,281 @@ from loguru import logger as log
 PUBLISHERS = [WebsitePublisher(), MediumPublisher(), LinkedInPublisher(), FacebookPublisher(), WechatPublisher()]
 
 
-async def main_pipeline() -> None:
-    """Intent-driven content production pipeline.
+# ── Stage 1: Research ─────────────────────────────────────────
 
-    1. Pick the highest-priority active cluster
-    2. Pick uncovered intents (pillar first, then supporting)
-    3. Research each intent (Search + News + Scholar)
-    4. Generate, humanize, enrich, publish
-    5. Mark intent as covered
+async def stage_research() -> int:
+    """Pick pending intents, research them, persist research data.
+
+    Reads: intents (pending) via intent_clusters
+    Writes: content rows with status='researched' + research_data JSON
+    Returns: number of intents researched
     """
-    log.info("========== Starting intent-driven pipeline ==========")
+    log.info("[stage_research] Looking for pending intents...")
 
-    try:
-        # 1. Find clusters with pending intents
-        active_clusters = await db.fetch_active_clusters()
-        if not active_clusters:
-            log.info("No active clusters with pending intents — run intent mining first")
-            return
+    active_clusters = await db.fetch_active_clusters()
+    if not active_clusters:
+        log.info("[stage_research] No active clusters with pending intents")
+        return 0
 
-        log.info("[1/4] Found {} active clusters with pending intents", len(active_clusters))
+    cap = settings.max_articles_per_run
+    intents_to_write: list[tuple[dict, dict]] = []
 
-        cap = settings.max_articles_per_run
-        success_count = 0
-        intents_to_write: list[tuple[dict, dict]] = []  # (intent, cluster)
-
-        # 2. Collect intents across clusters, prioritizing pillar intents
-        for cluster in active_clusters:
+    for cluster in active_clusters:
+        if len(intents_to_write) >= cap:
+            break
+        pending = await db.fetch_cluster_intents(cluster["id"], status="pending")
+        if not pending:
+            await db.mark_cluster_covered(cluster["id"])
+            log.info("[stage_research] Cluster '{}' fully covered", cluster["name"])
+            continue
+        for intent in pending:
             if len(intents_to_write) >= cap:
                 break
-            pending = await db.fetch_cluster_intents(cluster["id"], status="pending")
-            if not pending:
-                await db.mark_cluster_covered(cluster["id"])
-                log.info("Cluster '{}' fully covered", cluster["name"])
-                continue
+            intents_to_write.append((intent, cluster))
 
-            for intent in pending:
-                if len(intents_to_write) >= cap:
-                    break
-                intents_to_write.append((intent, cluster))
+    if not intents_to_write:
+        log.info("[stage_research] No pending intents to research")
+        return 0
 
-        if not intents_to_write:
-            log.info("No pending intents to write — all clusters covered")
-            return
+    log.info("[stage_research] Researching {} intents (cap={})", len(intents_to_write), cap)
+    count = 0
 
-        log.info("[2/4] Selected {} intents to write (cap={})", len(intents_to_write), cap)
-        for intent, cluster in intents_to_write:
+    for intent, cluster in intents_to_write:
+        try:
+            title_emb = await embed_text(intent["title"])
+            if title_emb:
+                existing = await db.find_similar_content(title_emb, threshold=0.85, days=60)
+                if existing:
+                    log.warning("[stage_research] Skipping '{}' — similar to '{}' (sim={:.3f})",
+                                intent["title"], existing["title"], existing["similarity"])
+                    await db.mark_intent_covered(intent["id"], existing["content_id"])
+                    continue
+
+            research = await research_topic(intent["title"])
+
+            content_id = f"mr-{uuid.uuid4().hex[:12]}"
+            raw_score = float(intent.get("priority_score", 7))
+            content_score = round(min(raw_score / 125, 10.0), 1)
+
+            research_payload = {
+                "synthesis": research.get("synthesis", ""),
+                "sources": research.get("sources", []),
+                "source_images": research.get("source_images", []),
+            }
+
+            await db.insert_researched_content(
+                content_id=content_id,
+                title=intent["title"],
+                cluster=cluster["slug"],
+                score=content_score,
+                intent_id=intent["id"],
+                research_data=research_payload,
+                title_embedding=title_emb,
+            )
+
+            await db.mark_intent_covered(intent["id"], content_id)
+
             pillar_tag = " [PILLAR]" if intent.get("is_pillar") else ""
-            log.info("  → '{}' (cluster: {}){}", intent["title"], cluster["name"], pillar_tag)
+            log.info("[stage_research] Researched '{}' → {} (cluster: {}){}",
+                     intent["title"], content_id, cluster["name"], pillar_tag)
+            count += 1
 
-        # 3. Generate content for each intent
-        log.info("[3/4] Generating content...")
-        for intent, cluster in intents_to_write:
-            try:
-                # Duplicate check against existing content
-                title_emb = await embed_text(intent["title"])
-                if title_emb:
-                    existing = await db.find_similar_content(title_emb, threshold=0.85, days=60)
-                    if existing:
-                        log.warning("Skipping '{}' — too similar to '{}' (sim={:.3f})",
-                                    intent["title"], existing["title"], existing["similarity"])
-                        await db.mark_intent_covered(intent["id"], existing["content_id"])
-                        continue
+        except Exception as exc:
+            log.error("[stage_research] Failed '{}': {}", intent["title"], exc, exc_info=True)
 
-                # Research: Google Search + News + Scholar
-                research = await research_topic(intent["title"])
+    log.info("[stage_research] Done — {} intents researched", count)
+    return count
 
-                # Build a ScoredTopic from the intent for the generator
-                source_urls = [s["url"] for s in research.get("sources", []) if s.get("url")]
-                topic = ScoredTopic(
-                    title=intent["title"],
-                    source="intent",
-                    score=float(intent.get("priority_score", 7)),
-                    decision="WRITE",
-                    suggested_angle="",
-                    cluster=cluster["slug"],
-                    source_urls=source_urls,
-                )
 
-                pkg = await generate(topic, research=research)
-                pkg.source_images = research.get("source_images", [])
-                pkg = await humanize(pkg)
-                pkg = await enrich(pkg)
-                pkg = await generate_featured(pkg)
-                pkg = await convert_to_wechat(pkg)
+# ── Stage 2: Generate ─────────────────────────────────────────
 
-                final_emb = await embed_text(pkg.article_title)
+async def stage_generate() -> int:
+    """Generate article HTML + social posts from researched content.
 
-                raw_score = float(intent.get("priority_score", 7))
-                content_score = min(raw_score / 125, 10.0)  # normalize to 0-10
+    Reads: content WHERE status='researched'
+    Writes: article_html, social_posts, outline, etc. → status='generated'
+    """
+    rows = await db.fetch_content_by_status("researched", limit=settings.max_articles_per_run)
+    if not rows:
+        log.info("[stage_generate] No 'researched' content to generate")
+        return 0
 
-                await db.insert_draft(
-                    content_id=pkg.content_id,
-                    title=pkg.article_title,
-                    cluster=cluster["slug"],
-                    score=round(content_score, 1),
-                    article_html=pkg.article_html,
-                    medium_article=pkg.medium_article,
-                    wechat_article=pkg.wechat_article,
-                    seo_keywords=pkg.seo_keywords,
-                    meta_description=pkg.meta_description,
-                    social_posts=pkg.social_posts,
-                    social_posts_variant_b=pkg.social_posts_variant_b,
-                    cta_a=pkg.cta_variant_a,
-                    cta_b=pkg.cta_variant_b,
-                    outline=pkg.outline,
-                    suggested_angle="",
-                    priority="medium",
-                    image_url=pkg.featured_image_url,
-                    title_embedding=final_emb,
-                    intent_id=intent["id"],
-                )
+    log.info("[stage_generate] Generating {} articles...", len(rows))
+    count = 0
 
-                # Mark intent as covered
-                await db.mark_intent_covered(intent["id"], pkg.content_id)
+    for row in rows:
+        try:
+            rd = row.get("research_data") or {}
+            if isinstance(rd, str):
+                rd = json.loads(rd)
 
-                if settings.auto_approve:
-                    await db.update_content_status(pkg.content_id, "approved")
-                    log.info("✓ Auto-approved: '{}' (intent: '{}', cluster: {})",
-                             pkg.article_title, intent["title"], cluster["name"])
-                    await publish_approved(pkg.content_id)
-                else:
-                    await send_for_approval(pkg)
-                    log.info("✓ Queued for approval: '{}' (intent: '{}', cluster: {})",
-                             pkg.article_title, intent["title"], cluster["name"])
-                success_count += 1
+            source_urls = [s["url"] for s in rd.get("sources", []) if s.get("url")]
 
-            except Exception as exc:
-                log.error("✗ Failed intent '{}': {}", intent["title"], exc, exc_info=True)
+            topic = ScoredTopic(
+                title=row["title"],
+                source="intent",
+                score=float(row.get("score", 7)),
+                decision="WRITE",
+                suggested_angle=row.get("suggested_angle", "") or "",
+                cluster=row.get("cluster", "other") or "other",
+                source_urls=source_urls,
+            )
 
-        # 4. Summary
+            research = {
+                "synthesis": rd.get("synthesis", ""),
+                "sources": rd.get("sources", []),
+            }
+
+            pkg = await generate(topic, research=research)
+            pkg.source_images = rd.get("source_images", [])
+            pkg = await humanize(pkg)
+
+            await db.update_content_stage(
+                row["content_id"],
+                "generated",
+                article_html=pkg.article_html,
+                medium_article=pkg.medium_article,
+                outline=pkg.outline,
+                social_posts=pkg.social_posts,
+                social_posts_variant_b=pkg.social_posts_variant_b,
+                seo_keywords=pkg.seo_keywords,
+                meta_description=pkg.meta_description,
+                cta_variant_a=pkg.cta_variant_a,
+                cta_variant_b=pkg.cta_variant_b,
+                title=pkg.article_title,
+            )
+
+            log.info("[stage_generate] Generated '{}'", pkg.article_title)
+            count += 1
+
+        except Exception as exc:
+            log.error("[stage_generate] Failed '{}': {}", row.get("title", "?"), exc, exc_info=True)
+
+    log.info("[stage_generate] Done — {} articles generated", count)
+    return count
+
+
+# ── Stage 3: Enrich ───────────────────────────────────────────
+
+async def stage_enrich() -> int:
+    """Enrich generated articles with images, featured image, WeChat conversion.
+
+    Reads: content WHERE status='generated'
+    Writes: image_url, wechat_article, enriched HTML → status='enriched'
+    """
+    rows = await db.fetch_content_by_status("generated", limit=settings.max_articles_per_run)
+    if not rows:
+        log.info("[stage_enrich] No 'generated' content to enrich")
+        return 0
+
+    log.info("[stage_enrich] Enriching {} articles...", len(rows))
+    count = 0
+
+    for row in rows:
+        try:
+            rd = row.get("research_data") or {}
+            if isinstance(rd, str):
+                rd = json.loads(rd)
+
+            pkg = _row_to_package(row)
+            pkg.source_images = rd.get("source_images", [])
+
+            pkg = await enrich(pkg)
+            pkg = await generate_featured(pkg)
+            pkg = await convert_to_wechat(pkg)
+
+            await db.update_content_stage(
+                row["content_id"],
+                "enriched",
+                article_html=pkg.article_html,
+                image_url=pkg.featured_image_url,
+                wechat_article=pkg.wechat_article or None,
+            )
+
+            log.info("[stage_enrich] Enriched '{}'", row["title"])
+            count += 1
+
+        except Exception as exc:
+            log.error("[stage_enrich] Failed '{}': {}", row.get("title", "?"), exc, exc_info=True)
+
+    log.info("[stage_enrich] Done — {} articles enriched", count)
+    return count
+
+
+# ── Stage 4: Finalize ─────────────────────────────────────────
+
+async def stage_finalize() -> int:
+    """Final pass: embed title, mark as draft, approve/publish.
+
+    Reads: content WHERE status='enriched'
+    Writes: title_embedding → status='draft', then auto-approve or Telegram
+    """
+    rows = await db.fetch_content_by_status("enriched", limit=settings.max_articles_per_run)
+    if not rows:
+        log.info("[stage_finalize] No 'enriched' content to finalize")
+        return 0
+
+    log.info("[stage_finalize] Finalizing {} articles...", len(rows))
+    count = 0
+
+    for row in rows:
+        try:
+            final_emb = await embed_text(row["title"])
+
+            await db.update_content_stage(
+                row["content_id"],
+                "draft",
+                title_embedding=final_emb,
+            )
+
+            if settings.auto_approve:
+                await db.update_content_status(row["content_id"], "approved")
+                log.info("[stage_finalize] Auto-approved: '{}'", row["title"])
+                await publish_approved(row["content_id"])
+            else:
+                pkg = _row_to_package(row)
+                await send_for_approval(pkg)
+                log.info("[stage_finalize] Queued for approval: '{}'", row["title"])
+
+            count += 1
+
+        except Exception as exc:
+            log.error("[stage_finalize] Failed '{}': {}", row.get("title", "?"), exc, exc_info=True)
+
+    log.info("[stage_finalize] Done — {} articles finalized", count)
+    return count
+
+
+# ── Orchestrator ──────────────────────────────────────────────
+
+async def main_pipeline() -> None:
+    """Run all production stages in sequence.
+
+    Each stage independently reads from DB and writes back,
+    so a crash between stages loses no work.
+    """
+    log.info("========== Starting intent-driven pipeline ==========")
+    try:
+        r = await stage_research()
+        g = await stage_generate()
+        e = await stage_enrich()
+        f = await stage_finalize()
+
         stats = await db.fetch_intent_stats()
         log.info(
-            "========== Pipeline complete: {}/{} articles generated "
+            "========== Pipeline complete: researched={}, generated={}, enriched={}, finalized={} "
             "(DB: {} pending, {} covered) ==========",
-            success_count, len(intents_to_write),
+            r, g, e, f,
             stats.get("pending", 0), stats.get("covered", 0),
         )
     except Exception as exc:
         log.error("Pipeline failed: {}", exc, exc_info=True)
 
 
-async def publish_approved(content_id: str) -> None:
-    """Called when content is approved via Telegram — publish to all platforms."""
-    log.info("Publishing approved content: {}", content_id)
-    row = await db.fetch_content(content_id)
-    if not row:
-        log.warning("Content {} not found", content_id)
-        return
+# ── Helpers ───────────────────────────────────────────────────
 
-    import json
-    from src.storage.models import ContentPackage
-
+def _row_to_package(row: dict) -> ContentPackage:
+    """Reconstruct a ContentPackage from a content DB row."""
     social = row.get("social_posts", "{}")
     if isinstance(social, str):
         try:
@@ -202,20 +327,41 @@ async def publish_approved(content_id: str) -> None:
         except json.JSONDecodeError:
             keywords = []
 
-    pkg = ContentPackage(
-        content_id=content_id,
-        article_title=row["title"],
-        article_html=row.get("article_html", ""),
-        medium_article=row.get("medium_article", ""),
-        wechat_article=row.get("wechat_article", ""),
+    outline = row.get("outline", "[]")
+    if isinstance(outline, str):
+        try:
+            outline = json.loads(outline)
+        except json.JSONDecodeError:
+            outline = []
+
+    return ContentPackage(
+        content_id=row.get("content_id", ""),
+        article_title=row.get("title", ""),
+        article_html=row.get("article_html", "") or "",
+        medium_article=row.get("medium_article", "") or "",
+        wechat_article=row.get("wechat_article", "") or "",
         social_posts=social if isinstance(social, dict) else {},
         social_posts_variant_b=social_b if isinstance(social_b, dict) else {},
         seo_keywords=keywords if isinstance(keywords, list) else [],
-        meta_description=row.get("meta_description", ""),
-        cta_variant_a=row.get("cta_variant_a", ""),
-        cta_variant_b=row.get("cta_variant_b", ""),
-        featured_image_url=row.get("image_url", ""),
+        meta_description=row.get("meta_description", "") or "",
+        cta_variant_a=row.get("cta_variant_a", "") or "",
+        cta_variant_b=row.get("cta_variant_b", "") or "",
+        featured_image_url=row.get("image_url", "") or "",
+        outline=outline if isinstance(outline, list) else [],
     )
+
+
+# ── Publishing ────────────────────────────────────────────────
+
+async def publish_approved(content_id: str) -> None:
+    """Called when content is approved — publish to all platforms."""
+    log.info("Publishing approved content: {}", content_id)
+    row = await db.fetch_content(content_id)
+    if not row:
+        log.warning("Content {} not found", content_id)
+        return
+
+    pkg = _row_to_package(row)
 
     cta_variant = await get_preferred_variant()
     log.info("Using CTA variant '{}' (A/B winner)", cta_variant)
@@ -242,29 +388,32 @@ async def publish_approved(content_id: str) -> None:
     log.info("Published {} to {}/{} platforms", content_id, published, len(PUBLISHERS))
 
 
-async def growth_loop() -> None:
-    """Phase 3: Expand covered clusters with deeper intents.
+# ── Growth Loop ───────────────────────────────────────────────
 
-    For clusters where all intents are covered, mine new deeper intents
-    using the cluster's pillar topic as a seed, then add them to the cluster.
-    """
+async def growth_loop() -> None:
+    """Expand covered clusters with deeper intents."""
     from src.pipeline.intent_miner import mine_intents
     from src.pipeline.intent_clusterer import process_intents
 
     log.info("========== Starting growth loop ==========")
     try:
-        # Find fully covered clusters
+        hard_max = settings.max_content_per_cluster
         async with db.get_session() as session:
             result = await session.execute(
                 db.text("""
-                    SELECT ic.id, ic.name, ic.slug, ic.pillar_intent_id
+                    SELECT ic.id, ic.name, ic.slug, ic.pillar_intent_id,
+                           COUNT(c.id) AS content_count
                     FROM intent_clusters ic
+                    LEFT JOIN content c ON c.cluster = ic.slug
                     WHERE ic.status = 'active'
                       AND ic.covered_count >= ic.intent_count
                       AND ic.intent_count > 0
+                    GROUP BY ic.id
+                    HAVING COUNT(c.id) < LEAST(ic.intent_count, :hard_max)
                     ORDER BY ic.priority_score DESC
                     LIMIT 10
-                """)
+                """),
+                {"hard_max": hard_max},
             )
             covered_clusters = [dict(r) for r in result.mappings().all()]
 
@@ -275,7 +424,6 @@ async def growth_loop() -> None:
         log.info("Found {} fully-covered clusters to expand", len(covered_clusters))
 
         for cluster in covered_clusters:
-            # Get the pillar intent title as the seed
             pillar_id = cluster.get("pillar_intent_id")
             if not pillar_id:
                 continue
@@ -300,7 +448,6 @@ async def growth_loop() -> None:
                 log.info("Added {} new intents from expansion of '{}'",
                          summary.get("intents", 0), cluster["name"])
 
-            # Mark as expanding so it doesn't get re-expanded next run
             await db.mark_cluster_covered(cluster["id"])
 
         log.info("========== Growth loop complete ==========")
@@ -308,11 +455,10 @@ async def growth_loop() -> None:
         log.error("Growth loop failed: {}", exc, exc_info=True)
 
 
-async def intent_mining_pipeline() -> None:
-    """Mine user intents, deduplicate, cluster, and save to DB.
+# ── Intent Mining ─────────────────────────────────────────────
 
-    Runs less frequently than content production (e.g. weekly).
-    """
+async def intent_mining_pipeline() -> None:
+    """Mine user intents, deduplicate, cluster, and save to DB."""
     from src.pipeline.intent_miner import mine_intents
     from src.pipeline.intent_clusterer import process_intents
 
@@ -343,6 +489,8 @@ async def intent_mining_pipeline() -> None:
     except Exception as exc:
         log.error("Intent mining failed: {}", exc, exc_info=True)
 
+
+# ── Daily Metrics ─────────────────────────────────────────────
 
 async def daily_metrics() -> None:
     """Daily job: collect metrics, A/B analysis, iterate low CTR, export dashboard."""

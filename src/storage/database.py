@@ -70,6 +70,65 @@ def _to_dict(row: Any) -> dict:
     return d
 
 
+# ── Content Stage Helpers ──────────────────────────────────────
+
+async def insert_researched_content(
+    content_id: str,
+    title: str,
+    cluster: str,
+    score: float,
+    intent_id: int | None,
+    research_data: dict,
+    title_embedding: list[float] | None = None,
+) -> None:
+    """Create a content row at the 'researched' stage with research data persisted."""
+    async with get_session() as session:
+        stmt = (
+            pg_insert(ContentRow)
+            .values(
+                content_id=content_id,
+                intent_id=intent_id,
+                title=title,
+                title_embedding=title_embedding,
+                cluster=cluster,
+                score=score,
+                research_data=research_data,
+                status="researched",
+                priority="medium",
+            )
+            .on_conflict_do_nothing(index_elements=["content_id"])
+        )
+        await session.execute(stmt)
+        await session.commit()
+
+
+async def fetch_content_by_status(status: str, limit: int = 10) -> list[dict]:
+    """Fetch content rows at a given pipeline stage."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT * FROM content
+                WHERE status = :status
+                ORDER BY score DESC, created_at ASC
+                LIMIT :lim
+            """),
+            {"status": status, "lim": limit},
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
+async def update_content_stage(content_id: str, new_status: str, **fields: Any) -> None:
+    """Atomically advance a content row to the next stage and update fields."""
+    async with get_session() as session:
+        values: dict[str, Any] = {"status": new_status, **fields}
+        if new_status == "approved":
+            values["approved_at"] = func.now()
+        await session.execute(
+            update(ContentRow).where(ContentRow.content_id == content_id).values(**values)
+        )
+        await session.commit()
+
+
 # ── Content CRUD ───────────────────────────────────────────────
 
 async def find_similar_content(
@@ -521,19 +580,29 @@ async def find_similar_intent(
 
 
 async def fetch_active_clusters() -> list[dict]:
-    """Fetch intent clusters that still have uncovered intents."""
+    """Fetch intent clusters that still have uncovered intents and haven't hit the content cap.
+
+    Cap per cluster = min(intent_count, max_content_per_cluster).
+    Each intent can produce at most one article, hard-capped at the configured max.
+    """
+    hard_max = settings.max_content_per_cluster
     async with get_session() as session:
         result = await session.execute(
             text("""
                 SELECT ic.id, ic.name, ic.slug, ic.pillar_intent_id,
                        ic.pillar_content_id, ic.status,
                        ic.intent_count, ic.covered_count,
-                       ic.priority_score
+                       ic.priority_score,
+                       COUNT(c.id) AS content_count
                 FROM intent_clusters ic
+                LEFT JOIN content c ON c.cluster = ic.slug
                 WHERE ic.status IN ('active', 'expanding')
                   AND ic.covered_count < ic.intent_count
+                GROUP BY ic.id
+                HAVING COUNT(c.id) < LEAST(ic.intent_count, :hard_max)
                 ORDER BY ic.priority_score DESC
-            """)
+            """),
+            {"hard_max": hard_max},
         )
         return [dict(r) for r in result.mappings().all()]
 
