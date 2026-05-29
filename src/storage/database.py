@@ -1041,6 +1041,27 @@ async def store_research_for_content(
         await session.commit()
 
 
+async def fetch_intents_for_content(content_id: str) -> list[dict]:
+    """Intents this content addresses: the primary intent + all others in the same cluster."""
+    async with get_session() as session:
+        result = await session.execute(
+            text("""
+                SELECT i.id, i.title, i.source, i.source_url, i.snippet,
+                       i.priority_score, c.name AS cluster_name,
+                       (i.content_id = ct.content_id) AS is_primary
+                FROM content ct
+                LEFT JOIN intent_clusters c ON c.slug = ct.cluster
+                LEFT JOIN intents i
+                  ON (i.content_id = ct.content_id)
+                  OR (i.cluster_id = c.id)
+                WHERE ct.content_id = :cid AND i.id IS NOT NULL
+                ORDER BY is_primary DESC, i.priority_score DESC, i.id ASC
+            """),
+            {"cid": content_id},
+        )
+        return [dict(r) for r in result.mappings().all()]
+
+
 async def fetch_content_sources(content_id: str) -> list[ContentResource]:
     async with get_session() as session:
         result = await session.execute(

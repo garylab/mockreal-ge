@@ -15,6 +15,8 @@ from src.storage.database import (
     delete_setting,
     delete_user,
     fetch_content,
+    fetch_content_sources,
+    fetch_intents_for_content,
     fetch_brand,
     fetch_brand_accounts,
     fetch_brands,
@@ -228,6 +230,9 @@ async def content_detail_tab(request: Request, content_id: str, tab: str):
         raise HTTPException(404, "Unknown tab")
     row = await _content_or_404(content_id)
     ctx = {"row": row, "active_tab": tab}
+    if tab == "overview":
+        ctx["intents"] = await fetch_intents_for_content(content_id)
+        ctx["resources"] = await fetch_content_sources(content_id)
     if tab == "publishes":
         ctx["publishes"] = await _fetch(
             """

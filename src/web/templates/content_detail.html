@@ -116,6 +116,77 @@
 </section>
 {% endif %}
 
+{% if intents %}
+<section class="{{ sec }} space-y-2">
+  <div class="flex items-start justify-between gap-2">
+    <div>
+      <h3 class="text-base font-semibold">Intents <span class="text-muted text-xs font-normal">({{ intents|length }})</span></h3>
+      <p class="text-muted text-xs">User intents this article was generated to answer.</p>
+    </div>
+    <button type="button" class="{{ copy_btn }}"
+            data-copy-text="{% for it in intents %}{{ it.title }}{% if not loop.last %}&#10;{% endif %}{% endfor %}"
+            title="Copy titles">{{ copy_icon }}</button>
+  </div>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-muted text-[11px] uppercase tracking-wider">
+        <tr>
+          <th class="px-2 py-1.5 text-left font-medium">Title</th>
+          <th class="px-2 py-1.5 text-left font-medium">Cluster</th>
+          <th class="px-2 py-1.5 text-left font-medium">Source</th>
+          <th class="px-2 py-1.5 text-right font-medium">Score</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {% for it in intents %}
+        <tr class="hover:bg-slate-800/30">
+          <td class="px-2 py-1.5">
+            {% if it.source_url and not it.source_url.startswith('paa://') %}
+            <a class="text-sky-400 hover:underline" href="{{ it.source_url }}" target="_blank" rel="noopener">{{ it.title }}</a>
+            {% else %}{{ it.title }}{% endif %}
+            {% if it.is_primary %}<span class="ml-1 text-[10px] uppercase tracking-wider text-emerald-400">primary</span>{% endif %}
+          </td>
+          <td class="px-2 py-1.5 text-muted">{{ it.cluster_name or '—' }}</td>
+          <td class="px-2 py-1.5 text-muted">{{ it.source }}</td>
+          <td class="px-2 py-1.5 text-right text-muted">{{ it.priority_score }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
+{% if resources %}
+<section class="{{ sec }} space-y-2">
+  <h3 class="text-base font-semibold">Research references <span class="text-muted text-xs font-normal">({{ resources|length }})</span></h3>
+  <p class="text-muted text-xs">Search results, news, and scholar sources this article cites.</p>
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead class="text-muted text-[11px] uppercase tracking-wider">
+        <tr>
+          <th class="px-2 py-1.5 text-left font-medium">Kind</th>
+          <th class="px-2 py-1.5 text-left font-medium">Title</th>
+          <th class="px-2 py-1.5 text-left font-medium">Domain</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-border">
+        {% for r in resources %}
+        <tr class="hover:bg-slate-800/30 align-top">
+          <td class="px-2 py-1.5 text-muted whitespace-nowrap">{{ r.kind or '—' }}</td>
+          <td class="px-2 py-1.5">
+            <a class="text-sky-400 hover:underline" href="{{ r.url }}" target="_blank" rel="noopener nofollow">{{ r.title or r.url }}</a>
+            {% if r.snippet %}<div class="text-muted text-xs mt-0.5">{{ r.snippet }}</div>{% endif %}
+          </td>
+          <td class="px-2 py-1.5 text-muted whitespace-nowrap">{{ r.domain or '—' }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
+
 {% if row.cta_variant_a or row.cta_variant_b %}
 <section class="{{ sec }} space-y-2">
   <h3 class="text-base font-semibold">CTA variants</h3>
@@ -142,10 +213,15 @@
   // Generic copy handler: read either .value (for inputs/textareas) or .innerText
   document.querySelectorAll('.copy-text-btn').forEach(btn => {
     btn.addEventListener('click', async () => {
-      const sel = btn.dataset.copyTarget;
-      const el = sel ? document.querySelector(sel) : null;
-      if (!el) return;
-      const text = btn.dataset.copyValue ? (el.value || '') : (el.innerText || '').trim();
+      let text;
+      if (btn.dataset.copyText !== undefined) {
+        text = btn.dataset.copyText;
+      } else {
+        const sel = btn.dataset.copyTarget;
+        const el = sel ? document.querySelector(sel) : null;
+        if (!el) return;
+        text = btn.dataset.copyValue ? (el.value || '') : (el.innerText || '').trim();
+      }
       try {
         await navigator.clipboard.writeText(text);
       } catch {

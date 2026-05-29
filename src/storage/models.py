@@ -164,6 +164,7 @@ class ContentRow(Base):
     title: Mapped[str] = mapped_column(Text, nullable=False)
     title_embedding = mapped_column(Vector(1536), nullable=True)
     research_data = mapped_column(JSONB, nullable=False, server_default=sa_text("'{}'::jsonb"))
+    synthesis: Mapped[str] = mapped_column(Text, nullable=False, server_default=sa_text("''"))
     article_html: Mapped[str | None] = mapped_column(Text)
     medium_article: Mapped[str | None] = mapped_column(Text)
     wechat_article: Mapped[str | None] = mapped_column(Text)
